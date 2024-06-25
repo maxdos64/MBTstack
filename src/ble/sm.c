@@ -37,7 +37,6 @@
 
 #define BTSTACK_FILE__ "sm.c"
 
-#include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
 
@@ -119,6 +118,15 @@ typedef enum {
     CMAC_CALC_MLAST,
     CMAC_W4_MLAST
 } cmac_state_t;
+
+typedef enum {
+    JUST_WORKS,
+    PK_RESP_INPUT,       // Initiator displays PK, responder inputs PK
+    PK_INIT_INPUT,       // Responder displays PK, initiator inputs PK
+    PK_BOTH_INPUT,       // Only input on both, both input PK
+    NUMERIC_COMPARISON,  // Only numerical compparison (yes/no) on on both sides
+    OOB                  // OOB available on one (SC) or both sides (legacy)
+} stk_generation_method_t;
 
 typedef enum {
     SM_USER_RESPONSE_IDLE,
@@ -287,8 +295,6 @@ static btstack_timer_source_t sm_run_timer;
 static ec_key_generation_state_t ec_key_generation_state;
 static uint8_t ec_q[64];
 #endif
-
-struct SmMitmOptions sm_mitm_options;
 
 //
 // Volume 3, Part H, Chapter 24
@@ -1659,10 +1665,7 @@ static void sm_sc_state_after_receiving_random(sm_connection_t * sm_conn){
                 if (setup->sm_passkey_bit < 20u) {
                     sm_sc_start_calculating_local_confirm(sm_conn);
                 } else {
-
-						 /* Implementing second stage PPE */
-                    // sm_sc_prepare_dhkey_check(sm_conn);
-                    sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G3;
+                    sm_sc_prepare_dhkey_check(sm_conn);
                 }
                 break;
             case OOB:
@@ -1706,22 +1709,9 @@ static void sm_sc_cmac_done(uint8_t * hash){
             break;
         case SM_SC_W4_CALCULATE_G2: {
             uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
-				sm_conn->vab = vab;
             big_endian_store_32(setup->sm_tk, 12, vab);
-           	sm_conn->second_patched_stage = false;
             sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
             sm_trigger_user_response(sm_conn);
-            break;
-        }
-        case SM_SC_W4_CALCULATE_G3: {
-            uint32_t vab2 = big_endian_read_32(hash, 12) % 1000000;
-            sm_conn->vab2 = vab2;
-            big_endian_store_32(setup->sm_tk, 12, vab2);
-           	sm_conn->second_patched_stage = true;
-            sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
-            sm_trigger_user_response(sm_conn);
-            if(sm_passkey_entry(setup->sm_stk_generation_method))
-					sm_sc_prepare_dhkey_check(sm_conn);
             break;
         }
         case SM_SC_W4_CALCULATE_F5_SALT:
@@ -1924,24 +1914,6 @@ static void g2_engine(sm_connection_t * sm_conn, const sm_key256_t u, const sm_k
     sm_cmac_message_start(x, message_len, sm_cmac_sc_buffer, &sm_sc_cmac_done);
 }
 
-// passkey is 20 bits -> we take it as 24 bits
-// req is 56 bits
-// resp is 56 bits
-static void g3_engine(sm_connection_t * sm_conn, uint32_t passkey, const sm_pairing_packet_t req, const sm_pairing_packet_t resp){
-	log_info("RUNNING G3 ENGINE!\n");
-	const uint16_t message_len = 3 + 7 + 7;
-	sm_cmac_connection = sm_conn;
-	(void)memcpy(sm_cmac_sc_buffer, &passkey, 3);
-	(void)memcpy(sm_cmac_sc_buffer + 3, req, 7);
-	(void)memcpy(sm_cmac_sc_buffer + 3 + 7, resp, 7);
-	uint8_t *key = (uint8_t []) {0xe0, 0x6a, 0xe7, 0x67, 0x4b, 0xf8, 0x52, 0x96, 0xd9, 0x1e, 0x18, 0x3e, 0x86, 0x4e, 0x28, 0x86};
-	log_info("g3 key");
-	log_info_hexdump(key, 16);
-	log_info("g3 message");
-	log_info_hexdump(sm_cmac_sc_buffer, message_len);
-	sm_cmac_message_start(key, message_len, sm_cmac_sc_buffer, &sm_sc_cmac_done);
-}
-
 static void g2_calculate(sm_connection_t * sm_conn) {
     // calc Va if numeric comparison
     if (IS_RESPONDER(sm_conn->sm_role)){
@@ -1951,18 +1923,6 @@ static void g2_calculate(sm_connection_t * sm_conn) {
         // initiator
         g2_engine(sm_conn, ec_q, setup->sm_peer_q, setup->sm_local_nonce, setup->sm_peer_nonce);
     }
-}
-
-static void g3_calculate(sm_connection_t * sm_conn) {
-	// calc Va2 if numeric comparison
-	if (IS_RESPONDER(sm_conn->sm_role)){
-		// responder
-		g3_engine(sm_conn, sm_conn->vab, setup->sm_m_preq, setup->sm_s_pres);
-	} else {
-		// initiator
-		g3_engine(sm_conn, sm_conn->vab, setup->sm_m_preq, setup->sm_s_pres);
-	}
-
 }
 
 static void sm_sc_calculate_local_confirm(sm_connection_t * sm_conn){
@@ -2686,9 +2646,6 @@ static void sm_run_state_sc_send_confirmation(sm_connection_t *connection) {
     buffer[0] = SM_CODE_PAIRING_CONFIRM;
     reverse_128(setup->sm_local_confirm, &buffer[1]);
     if (IS_RESPONDER(connection->sm_role)){
-		   if(sm_mitm_options.responder_await_manipulated_confirm_callback)
-				sm_mitm_options.responder_await_manipulated_confirm_callback(setup->sm_local_confirm);
-
         connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
     } else {
         connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
@@ -2715,21 +2672,15 @@ static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
         log_info("SM_SC_SEND_PAIRING_RANDOM B");
         if (IS_RESPONDER(connection->sm_role)){
             // responder
-			if(sm_mitm_options.responder_await_manipulated_nb_callback)
-				sm_mitm_options.responder_await_manipulated_nb_callback(setup->sm_local_nonce);
             if (setup->sm_stk_generation_method == NUMERIC_COMPARISON){
                 log_info("SM_SC_SEND_PAIRING_RANDOM B1");
                 connection->sm_engine_state = SM_SC_W2_CALCULATE_G2;
             } else {
                 log_info("SM_SC_SEND_PAIRING_RANDOM B2");
-					 /* Implement second stage of PPE */
-					 connection->sm_engine_state = SM_SC_W2_CALCULATE_G3;
-					 // sm_sc_prepare_dhkey_check(connection);
+                sm_sc_prepare_dhkey_check(connection);
             }
         } else {
             // initiator
-			if(sm_mitm_options.initiator_await_manipulated_na_callback)
-				sm_mitm_options.initiator_await_manipulated_na_callback(setup->sm_local_nonce);
             connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
         }
     }
@@ -2758,16 +2709,6 @@ static void sm_run_state_sc_send_public_key_command(sm_connection_t *connection)
     uint8_t buffer[65];
     buffer[0] = SM_CODE_PAIRING_PUBLIC_KEY;
     //
-		if(IS_RESPONDER(connection->sm_role))
-		{
-			if(sm_mitm_options.responder_await_manipulated_pubkey_callback)
-				(*sm_mitm_options.responder_await_manipulated_pubkey_callback)((char *)ec_q);
-		}
-		else
-		{
-			if(sm_mitm_options.initiator_await_manipulated_pubkey_callback)
-				(*sm_mitm_options.initiator_await_manipulated_pubkey_callback)((char *)ec_q);
-		}
     reverse_256(&ec_q[0],  &buffer[1]);
     reverse_256(&ec_q[32], &buffer[33]);
 
@@ -2863,10 +2804,6 @@ static void sm_run(void){
 
     // pause until IR/ER are ready
     if (sm_persistent_keys_random_active) return;
-
-
-    if (sm_mitm_options.sm_run_callback)
-	    (*sm_mitm_options.sm_run_callback)();
 
     // non-connection related behaviour
     bool done = sm_run_non_connection_logic();
@@ -2964,11 +2901,6 @@ static void sm_run(void){
                 connection->sm_engine_state = SM_SC_W4_CALCULATE_G2;
                 g2_calculate(connection);
                 break;
-				case SM_SC_W2_CALCULATE_G3:
-					connection->sm_engine_state = SM_SC_W4_CALCULATE_G3;
-					g3_calculate(connection);
-					break;
-
 #endif
 
 #ifdef ENABLE_LE_CENTRAL
@@ -3077,10 +3009,6 @@ static void sm_run(void){
                     default:
                         break;
                 }
-
-
-		if (sm_mitm_options.responder_set_custom_pairing_feature_exchange_callback)
-			sm_mitm_options.responder_set_custom_pairing_feature_exchange_callback(sm_pairing_packet_get_io_capability(connection->sm_m_preq));
 
 				sm_init_setup(connection);
 
@@ -3735,10 +3663,6 @@ static void sm_handle_random_result_ph2_tk(void * arg){
         // override with pre-defined passkey
         tk = sm_fixed_passkey_in_display_role;
     }
-
-    if (sm_mitm_options.responder_set_custom_passkey_callback)
-	sm_mitm_options.responder_set_custom_passkey_callback(&tk);
-
     big_endian_store_32(setup->sm_tk, 12, tk);
     if (IS_RESPONDER(connection->sm_role)){
         connection->sm_engine_state = SM_RESPONDER_PH1_SEND_PAIRING_RESPONSE;
@@ -4625,16 +4549,6 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
             reverse_256(&packet[01], &setup->sm_peer_q[0]);
             reverse_256(&packet[33], &setup->sm_peer_q[32]);
 
-	    if(IS_RESPONDER(sm_conn->sm_role))
-	    {
-	    	if(sm_mitm_options.responder_pub_key_received_callback)
-	    		sm_mitm_options.responder_pub_key_received_callback((char *)&setup->sm_peer_q);
-	    }
-	    else
-	    {
-	    	if(sm_mitm_options.initiator_pub_key_received_callback)
-	    		sm_mitm_options.initiator_pub_key_received_callback((char *)&setup->sm_peer_q);
-	    }
             // CVE-2020-26558: abort pairing if remote uses the same public key
             if (memcmp(&setup->sm_peer_q, ec_q, 64) == 0){
                 log_info("Remote PK matches ours");
@@ -4654,15 +4568,6 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
             btstack_crypto_ecc_p256_calculate_dhkey(&sm_crypto_ecc_p256_request, setup->sm_peer_q, setup->sm_dhkey, sm_sc_dhkey_calculated, (void*)(uintptr_t) sm_conn->sm_handle);
 
 
-	    if(IS_RESPONDER(sm_conn->sm_role))
-	    {
-	    	if(sm_mitm_options.responder_custom_dh_key_callback)
-	    		sm_mitm_options.responder_custom_dh_key_callback(setup->sm_dhkey);
-	    }
-	    else if(sm_mitm_options.initiator_custom_dh_key_callback)
-	    {
-	    	sm_mitm_options.initiator_custom_dh_key_callback(setup->sm_dhkey);
-	    }
             log_info("public key received, generation method %u", setup->sm_stk_generation_method);
             if (IS_RESPONDER(sm_conn->sm_role)){
                 // responder
@@ -4725,9 +4630,6 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
                 sm_sc_start_calculating_local_confirm(sm_conn);
             } else {
                 // initiator
-		if(sm_mitm_options.initiator_confirm_received_callback)
-			sm_mitm_options.initiator_confirm_received_callback(setup->sm_peer_confirm);
-
                 if (sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method)){
                     btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_nonce, 16, &sm_handle_random_result_sc_next_send_pairing_random, (void*)(uintptr_t) sm_conn->sm_handle);
                 } else {
@@ -4744,17 +4646,6 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 
             // received random value
             reverse_128(&packet[1], setup->sm_peer_nonce);
-
-	    if(IS_RESPONDER(sm_conn->sm_role))
-	    {
-	    	if(sm_mitm_options.responder_na_received_callback)
-	    		sm_mitm_options.responder_na_received_callback(setup->sm_peer_nonce);
-	    }
-	    else
-	    {
-	    	if(sm_mitm_options.initiator_nb_received_callback)
-	    		sm_mitm_options.initiator_nb_received_callback(setup->sm_peer_nonce);
-	    }
 
             // validate confirm value if Cb = f4(Pkb, Pka, Nb, z)
             // only check for JUST WORK/NC in initiator role OR passkey entry
@@ -5475,12 +5366,7 @@ void sm_just_works_confirm(hci_con_handle_t con_handle){
 
 void sm_numeric_comparison_confirm(hci_con_handle_t con_handle){
     // for now, it's the same
-	/* Add second stage for PNC */
-	sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
-	if(sm_conn->second_patched_stage)
-		sm_just_works_confirm(con_handle);
-	else
-		sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G3;
+    sm_just_works_confirm(con_handle);
 }
 
 void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
@@ -5493,30 +5379,11 @@ void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
         btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_random, 16, &sm_handle_random_result_ph2_random, (void *)(uintptr_t) sm_conn->sm_handle);
     }
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
-
-	if(sm_conn->second_patched_stage)
-	{
-		/* Compare of local g3 output same as received passkey */
-		if(passkey == sm_conn->vab2)
-		{
-			sm_sc_prepare_dhkey_check(sm_conn);
-			return;
-		}
-		else
-		{
-			printf("PAIRING ABORTING\n");
-			sm_pairing_error(sm_conn, SM_REASON_PASSKEY_ENTRY_FAILED);
-		}
-	}
-	else
-	{
-		sm_conn->vab = passkey;
-		(void)memcpy(setup->sm_ra, setup->sm_tk, 16);
-		(void)memcpy(setup->sm_rb, setup->sm_tk, 16);
-		if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
-			sm_sc_start_calculating_local_confirm(sm_conn);
-		}
-	}
+    (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
+    (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
+    if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
+        sm_sc_start_calculating_local_confirm(sm_conn);
+    }
 #endif
     sm_trigger_run();
 }

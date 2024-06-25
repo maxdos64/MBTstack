@@ -430,8 +430,6 @@ typedef enum {
     SM_BR_EDR_W4_CALCULATE_ILK,
     SM_BR_EDR_W2_CALCULATE_LE_LTK,
     SM_BR_EDR_W4_CALCULATE_LE_LTK,
-    SM_SC_W2_CALCULATE_G3,
-    SM_SC_W4_CALCULATE_G3
 } security_manager_state_t;
 
 typedef enum {
@@ -469,9 +467,6 @@ typedef struct sm_connection {
     int                      sm_le_db_index;
     bool                     sm_pairing_active;
     bool                     sm_reencryption_active;
-	uint32_t							vab;
-	uint32_t							vab2;
-	bool								second_patched_stage;
 } sm_connection_t;
 
 //
