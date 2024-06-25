@@ -130,6 +130,17 @@ typedef struct {
     int        parity;        // see btstack_uart.h BTSTACK_UART_PARITY
 } hci_transport_config_uart_t;
 
+/*
+ * @brief
+ */
+const hci_transport_t * hci_transport_usb_instance(void);
+
+/**
+ * @brief Specify USB Bluetooth device via port numbers from root to device
+ */
+void hci_transport_usb_set_path(int len, uint8_t * port_numbers);
+void hci_transport_usb_set_address(uint8_t _dev_addr);
+
 /* API_END */
     
 #if defined __cplusplus
