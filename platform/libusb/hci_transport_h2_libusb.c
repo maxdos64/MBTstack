@@ -384,6 +384,7 @@ static int sco_out_addr;
 // device path
 static int usb_path_len;
 static uint8_t dev_addr;
+static uint8_t dev_bus;
 static uint8_t usb_path[USB_MAX_PATH_LEN];
 
 // device info
@@ -428,9 +429,11 @@ void hci_transport_usb_set_path(int len, uint8_t * port_numbers){
     memcpy(usb_path, port_numbers, len);
 }
 
-void hci_transport_usb_set_address(uint8_t _dev_addr)
+void hci_transport_usb_set_address(uint8_t _dev_bus, uint8_t _dev_addr)
 {
-        dev_addr = _dev_addr;
+	dev_bus = _dev_bus;
+	dev_addr = _dev_addr;
+
 }
 
 LIBUSB_CALL static void async_callback(struct libusb_transfer *transfer) {
@@ -1130,12 +1133,12 @@ static int usb_open(void){
     }
     else if(dev_addr)
     {
-		printf("dev: %d\n", dev_addr);
+		printf("dev bus: %d, addr: %d\n", dev_addr, dev_bus);
 		for (int i = 0; i < num_devices; i++)
 		{
-			if(libusb_get_device_address(devs[i]) == dev_addr)
+			if(libusb_get_device_address(devs[i]) == dev_addr && libusb_get_bus_number(devs[i]) == dev_bus)
 			{
-				printf("using: %d\n", libusb_get_device_address(devs[i]));
+				// printf("using: %d\n", libusb_get_device_address(devs[i]));
 
 				printf("Found Specified USB device\n");
 				handle = try_open_device(devs[i]);
