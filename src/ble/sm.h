@@ -58,6 +58,7 @@ typedef struct {
     bd_addr_type_t address_type;
 } sm_lookup_entry_t;
 
+
 /* API_START */
 
 /**
@@ -284,6 +285,29 @@ void sm_register_sc_oob_data_callback( int (*get_sc_oob_data_callback)(uint8_t a
  * @param get_ltk_callback
  */
 void sm_register_ltk_callback( bool (*get_ltk_callback)(hci_con_handle_t con_handle, uint8_t address_type, bd_addr_t addr, uint8_t * ltk));
+
+struct SmMitmOptions{
+	void (*sm_run_callback)(void);
+	// void (*initiator_await_manipulated_pubkey_callback)(char *);
+	// void (*responder_await_manipulated_pubkey_callback)(char *);
+	// void (*initiator_pub_key_received_callback)(char *);
+	// void (*responder_pub_key_received_callback)(char *);
+	// void (*initiator_confirm_received_callback)(sm_key_t);
+	// void (*responder_await_manipulated_confirm_callback)(sm_key_t);
+	// void (*initiator_await_manipulated_na_callback)(sm_key_t);
+	// void (*responder_na_received_callback)(sm_key_t);
+	// void (*initiator_nb_received_callback)(sm_key_t);
+	// void (*responder_await_manipulated_nb_callback)(sm_key_t);
+	// void (*initiator_custom_dh_key_callback)(sm_key_t dh_key);
+	// void (*responder_custom_dh_key_callback)(sm_key_t dh_key);
+	// void (*initiator_received_pairing_feature_exchange_callback)(stk_generation_method_t method);
+	// void (*responder_set_custom_pairing_feature_exchange_callback)(uint8_t iocap);
+	// void (*responder_set_custom_passkey_callback)(uint32_t* tk);
+	void (*initiator_set_custom_passkey_callback)(uint32_t* tk);
+	uint8_t turnoff_dhkey_validation;
+};
+
+void sm_register_mitm_options(struct SmMitmOptions* options);
 
 /* API_END */
 
