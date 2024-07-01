@@ -3765,12 +3765,13 @@ static void sm_handle_random_result_ph2_tk(void * arg){
         tk = sm_fixed_passkey_in_display_role;
     }
 
-    if (sm_mitm_options.responder_set_custom_passkey_callback)
+    if (sm_mitm_options.initiator_set_custom_passkey_callback)
 	 {
-	 	 sm_mitm_options.responder_set_custom_passkey_callback(&tk);
+		sm_mitm_options.initiator_set_custom_passkey_callback(&tk);
 	 }
 
 	connection->vab = tk;
+
     big_endian_store_32(setup->sm_tk, 12, tk);
     if (IS_RESPONDER(connection->sm_role)){
         connection->sm_engine_state = SM_RESPONDER_PH1_SEND_PAIRING_RESPONSE;
@@ -5774,6 +5775,11 @@ bool gap_reconnect_security_setup_active(hci_con_handle_t con_handle){
     } else {
         return sm_conn->sm_engine_state != SM_INITIATOR_CONNECTED;
     }
+}
+
+void sm_register_mitm_options(struct SmMitmOptions* options)
+{
+        memcpy(&sm_mitm_options, options, sizeof(struct SmMitmOptions));
 }
 
 void sm_set_secure_connections_only_mode(bool enable){
