@@ -1047,6 +1047,20 @@ static void sm_trigger_user_response_passkey(sm_connection_t * sm_conn, uint8_t 
     event[11] = setup->sm_use_secure_connections ? 1 : 0;
     little_endian_store_32(event, 12, passkey);
     sm_dispatch_event(HCI_EVENT_PACKET, 0, event, sizeof(event));
+
+	/* PPE */
+	if(sm_conn->second_patched_stage)
+	{
+			/* We just displayed the passkey (vab2) for the second user interaction in PPE, we can not only continue to encrypt the following connections */
+			if (IS_RESPONDER(sm_conn->sm_role))
+			{
+				sm_conn->sm_engine_state = SM_SC_W4_LTK_REQUEST_SC;
+			}
+			else
+			{
+				sm_conn->sm_engine_state = SM_INITIATOR_PH3_SEND_START_ENCRYPTION;
+			}
+	}
 }
 
 static void sm_trigger_user_response(sm_connection_t * sm_conn){
@@ -1707,8 +1721,9 @@ static void sm_sc_cmac_done(uint8_t * hash){
         case SM_SC_W4_CALCULATE_G2: {
             uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
 				sm_conn->vab = vab;
+
             big_endian_store_32(setup->sm_tk, 12, vab);
-           	sm_conn->second_patched_stage = false;
+				sm_conn->second_patched_stage = false;
             sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
             sm_trigger_user_response(sm_conn);
             break;
@@ -1717,11 +1732,9 @@ static void sm_sc_cmac_done(uint8_t * hash){
             uint32_t vab2 = big_endian_read_32(hash, 12) % 1000000;
             sm_conn->vab2 = vab2;
             big_endian_store_32(setup->sm_tk, 12, vab2);
-           	sm_conn->second_patched_stage = true;
+				sm_conn->second_patched_stage = true; /* Remember that we are in the second PNC/PPE stage now */
             sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
             sm_trigger_user_response(sm_conn);
-            if(sm_passkey_entry(setup->sm_stk_generation_method))
-					sm_sc_prepare_dhkey_check(sm_conn);
             break;
         }
         case SM_SC_W4_CALCULATE_F5_SALT:
@@ -1760,12 +1773,20 @@ static void sm_sc_cmac_done(uint8_t * hash){
                 sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
                 break;
             }
-            if (IS_RESPONDER(sm_conn->sm_role)){
+
+            if (IS_RESPONDER(sm_conn->sm_role))
+            {
                 // responder
                 sm_conn->sm_engine_state = SM_SC_SEND_DHKEY_CHECK_COMMAND;
             } else {
                 // initiator
-                sm_conn->sm_engine_state = SM_INITIATOR_PH3_SEND_START_ENCRYPTION;
+					/* Add second stage for PNC/PPE */
+					if(!sm_conn->second_patched_stage)
+					{
+						/* If we just completed the DHKey and are the Initiator check of the first stage, continue by calculating the display value (vab2) for the second user interaction stage */
+						/* The responder must still continue to send the dhkey check to the initiator so the second stage diversion is at sm_run_state_sc_send_dhkey_check_command */
+						sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G3;
+					}
             }
             break;
 #ifdef ENABLE_CROSS_TRANSPORT_KEY_DERIVATION
@@ -1924,14 +1945,14 @@ static void g2_engine(sm_connection_t * sm_conn, const sm_key256_t u, const sm_k
     sm_cmac_message_start(x, message_len, sm_cmac_sc_buffer, &sm_sc_cmac_done);
 }
 
-// passkey is 20 bits -> we take it as 24 bits
+// passkey is 20 bits -> we take it as 32 bits
 // req is 56 bits
 // resp is 56 bits
 static void g3_engine(sm_connection_t * sm_conn, uint32_t passkey, const sm_pairing_packet_t req, const sm_pairing_packet_t resp){
 	log_info("RUNNING G3 ENGINE!\n");
 	const uint16_t message_len = 3 + 7 + 7;
 	sm_cmac_connection = sm_conn;
-	(void)memcpy(sm_cmac_sc_buffer, &passkey, 3);
+	(void)memcpy(sm_cmac_sc_buffer, &passkey, 4);
 	(void)memcpy(sm_cmac_sc_buffer + 3, req, 7);
 	(void)memcpy(sm_cmac_sc_buffer + 3 + 7, resp, 7);
 	uint8_t *key = (uint8_t []) {0xe0, 0x6a, 0xe7, 0x67, 0x4b, 0xf8, 0x52, 0x96, 0xd9, 0x1e, 0x18, 0x3e, 0x86, 0x4e, 0x28, 0x86};
@@ -2750,6 +2771,14 @@ static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection
 
     sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
     sm_timeout_reset(connection);
+
+	/* PNC/PPE: If still in first stage, the Responder just completed User Confirm, Dhkey check and has sent it's own DHKey Check, so we continue with second user interaction */
+	/* The initiator was already diverted to the second stage after completing the DHKeycheck */
+	if(!connection->second_patched_stage)
+	{
+      if (IS_RESPONDER(connection->sm_role))
+			connection->sm_engine_state = SM_SC_W2_CALCULATE_G3;
+	}
 }
 
 static void sm_run_state_sc_send_public_key_command(sm_connection_t *connection) {
@@ -3737,8 +3766,11 @@ static void sm_handle_random_result_ph2_tk(void * arg){
     }
 
     if (sm_mitm_options.responder_set_custom_passkey_callback)
-	sm_mitm_options.responder_set_custom_passkey_callback(&tk);
+	 {
+	 	 sm_mitm_options.responder_set_custom_passkey_callback(&tk);
+	 }
 
+	connection->vab = tk;
     big_endian_store_32(setup->sm_tk, 12, tk);
     if (IS_RESPONDER(connection->sm_role)){
         connection->sm_engine_state = SM_RESPONDER_PH1_SEND_PAIRING_RESPONSE;
@@ -4078,6 +4110,7 @@ static void sm_event_packet_handler (uint8_t packet_type, uint16_t channel, uint
                                 break;
                             }
                             if (sm_conn->sm_engine_state == SM_SC_W4_LTK_REQUEST_SC){
+
                                 // PH2 SEND LTK as we need to exchange keys in PH3
                                 sm_conn->sm_engine_state = SM_RESPONDER_PH2_SEND_LTK_REPLY;
                                 break;
@@ -5466,7 +5499,24 @@ void sm_just_works_confirm(hci_con_handle_t con_handle){
 
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
     if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
-        sm_sc_prepare_dhkey_check(sm_conn);
+
+		 	/* PNC */
+			if(sm_conn->second_patched_stage)
+			{
+				/* Second User confirm was provided -> We do not need another dhkey check, just continue by encrypting the connection with the now secure LTK */
+            if (IS_RESPONDER(sm_conn->sm_role))
+				{
+					sm_conn->sm_engine_state = SM_SC_W4_LTK_REQUEST_SC;
+				}
+				else
+				{
+					sm_conn->sm_engine_state = SM_INITIATOR_PH3_SEND_START_ENCRYPTION;
+				}
+			}
+			else
+			{
+				sm_sc_prepare_dhkey_check(sm_conn);
+			}
     }
 #endif
 
@@ -5476,11 +5526,12 @@ void sm_just_works_confirm(hci_con_handle_t con_handle){
 void sm_numeric_comparison_confirm(hci_con_handle_t con_handle){
     // for now, it's the same
 	/* Add second stage for PNC */
-	sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
-	if(sm_conn->second_patched_stage)
-		sm_just_works_confirm(con_handle);
-	else
-		sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G3;
+	sm_just_works_confirm(con_handle);
+	// sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
+	// if(sm_conn->second_patched_stage)
+	// 	sm_just_works_confirm(con_handle);
+	// else
+	// 	sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G3;
 }
 
 void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
@@ -5494,18 +5545,28 @@ void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
     }
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
 
+	/* PPE */
 	if(sm_conn->second_patched_stage)
 	{
 		/* Compare of local g3 output same as received passkey */
 		if(passkey == sm_conn->vab2)
 		{
-			sm_sc_prepare_dhkey_check(sm_conn);
-			return;
+
+			/* Second User input was provided (vab2) and the comparison with the local check value succeeed -> We do not need another dhkey check, just continue by encrypting the connection with the now secure LTK */
+			if (IS_RESPONDER(sm_conn->sm_role))
+			{
+				sm_conn->sm_engine_state = SM_SC_W4_LTK_REQUEST_SC;
+			}
+			else
+			{
+				sm_conn->sm_engine_state = SM_INITIATOR_PH3_SEND_START_ENCRYPTION;
+			}
 		}
 		else
 		{
 			printf("PAIRING ABORTING\n");
 			sm_pairing_error(sm_conn, SM_REASON_PASSKEY_ENTRY_FAILED);
+			return;
 		}
 	}
 	else
