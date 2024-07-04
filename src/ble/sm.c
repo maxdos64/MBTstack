@@ -296,6 +296,8 @@ static ec_key_generation_state_t ec_key_generation_state;
 static uint8_t ec_q[64];
 #endif
 
+bool second_stage = false;
+
 //
 // Volume 3, Part H, Chapter 24
 // "Security shall be initiated by the Security Manager in the device in the master role.
@@ -321,203 +323,208 @@ typedef struct sm_setup_context {
     // Phase 2 (Pairing over SMP)
     stk_generation_method_t sm_stk_generation_method;
     sm_key_t  sm_tk;
-    uint8_t   sm_have_oob_data;
-    bool      sm_use_secure_connections;
+		 uint8_t   sm_local_packe_packet[32];
+		 uint8_t   sm_have_oob_data;
+		 bool      sm_use_secure_connections;
 
-    sm_key_t  sm_c1_t3_value;   // c1 calculation
-    sm_pairing_packet_t sm_m_preq; // pairing request - needed only for c1
-    sm_pairing_packet_t sm_s_pres; // pairing response - needed only for c1
-    sm_key_t  sm_local_random;
-    sm_key_t  sm_local_confirm;
-    sm_key_t  sm_peer_random;
-    sm_key_t  sm_peer_confirm;
-    uint8_t   sm_m_addr_type;   // address and type can be removed
-    uint8_t   sm_s_addr_type;   //  ''
-    bd_addr_t sm_m_address;     //  ''
-    bd_addr_t sm_s_address;     //  ''
-    sm_key_t  sm_ltk;
+		 sm_key_t  sm_c1_t3_value;   // c1 calculation
+		 sm_pairing_packet_t sm_m_preq; // pairing request - needed only for c1
+		 sm_pairing_packet_t sm_s_pres; // pairing response - needed only for c1
+		 sm_key_t  sm_local_random;
+		 sm_key_t  sm_local_confirm;
+		 sm_key_t  sm_peer_random;
+		 sm_key_t  sm_peer_confirm;
+		 uint8_t   sm_m_addr_type;   // address and type can be removed
+		 uint8_t   sm_s_addr_type;   //  ''
+		 bd_addr_t sm_m_address;     //  ''
+		 bd_addr_t sm_s_address;     //  ''
+		 sm_key_t  sm_ltk;
 
-    uint8_t   sm_state_vars;
+		 uint8_t   sm_state_vars;
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
-    uint8_t   sm_peer_q[64];    // also stores random for EC key generation during init
-    sm_key_t  sm_peer_nonce;    // might be combined with sm_peer_random
-    sm_key_t  sm_local_nonce;   // might be combined with sm_local_random
-    uint8_t   sm_dhkey[32];
-    sm_key_t  sm_peer_dhkey_check;
-    sm_key_t  sm_local_dhkey_check;
-    sm_key_t  sm_ra;
-    sm_key_t  sm_rb;
-    sm_key_t  sm_t;             // used for f5 and h6
-    sm_key_t  sm_mackey;
-    uint8_t   sm_passkey_bit;   // also stores number of generated random bytes for EC key generation
+		 uint8_t   sm_peer_q[64];    // also stores random for EC key generation during init
+		 sm_key_t  sm_peer_nonce;    // might be combined with sm_peer_random
+		 sm_key_t  sm_local_nonce;   // might be combined with sm_local_random
+		 uint8_t   sm_dhkey[32];
+		 uint8_t   sm_local_pake_payload[32];
+		 uint8_t   sm_pake_key[32];
+		 sm_key_t  sm_peer_dhkey_check;
+		 sm_key_t  sm_local_dhkey_check;
+		 sm_key_t  sm_ra;
+		 sm_key_t  sm_rb;
+		 sm_key_t  sm_t;             // used for f5 and h6
+		 sm_key_t  sm_mackey;
+		 uint8_t   sm_passkey_bit;   // also stores number of generated random bytes for EC key generation
 #endif
 
-    // Phase 3
+		 // Phase 3
 
-    // key distribution, we generate
-    uint16_t  sm_local_y;
-    uint16_t  sm_local_div;
-    uint16_t  sm_local_ediv;
-    uint8_t   sm_local_rand[8];
-    sm_key_t  sm_local_ltk;
-    sm_key_t  sm_local_csrk;
-    sm_key_t  sm_local_irk;
-    // sm_local_address/addr_type not needed
+		 // key distribution, we generate
+		 uint16_t  sm_local_y;
+		 uint16_t  sm_local_div;
+		 uint16_t  sm_local_ediv;
+		 uint8_t   sm_local_rand[8];
+		 sm_key_t  sm_local_ltk;
+		 sm_key_t  sm_local_csrk;
+		 sm_key_t  sm_local_irk;
+		 // sm_local_address/addr_type not needed
 
-    // key distribution, received from peer
-    uint16_t  sm_peer_y;
-    uint16_t  sm_peer_div;
-    uint16_t  sm_peer_ediv;
-    uint8_t   sm_peer_rand[8];
-    sm_key_t  sm_peer_ltk;
-    sm_key_t  sm_peer_irk;
-    sm_key_t  sm_peer_csrk;
-    uint8_t   sm_peer_addr_type;
-    bd_addr_t sm_peer_address;
+		 // key distribution, received from peer
+		 uint16_t  sm_peer_y;
+		 uint16_t  sm_peer_div;
+		 uint16_t  sm_peer_ediv;
+		 uint8_t   sm_peer_rand[8];
+		 sm_key_t  sm_peer_ltk;
+		 sm_key_t  sm_peer_irk;
+		 sm_key_t  sm_peer_csrk;
+		 uint8_t   sm_peer_addr_type;
+		 bd_addr_t sm_peer_address;
 #ifdef ENABLE_LE_SIGNED_WRITE
-    int       sm_le_device_index;
+		 int       sm_le_device_index;
 #endif
 #ifdef ENABLE_CROSS_TRANSPORT_KEY_DERIVATION
-    link_key_t sm_link_key;
-    link_key_type_t sm_link_key_type;
+		 link_key_t sm_link_key;
+		 link_key_type_t sm_link_key_type;
 #endif
-} sm_setup_context_t;
+	} sm_setup_context_t;
 
-//
-static sm_setup_context_t the_setup;
-static sm_setup_context_t * setup = &the_setup;
+	//
+	static sm_setup_context_t the_setup;
+	static sm_setup_context_t * setup = &the_setup;
 
-// active connection - the one for which the_setup is used for
-static uint16_t sm_active_connection_handle = HCI_CON_HANDLE_INVALID;
+	// active connection - the one for which the_setup is used for
+	static uint16_t sm_active_connection_handle = HCI_CON_HANDLE_INVALID;
 
-// @return 1 if oob data is available
-// stores oob data in provided 16 byte buffer if not null
-static int (*sm_get_oob_data)(uint8_t addres_type, bd_addr_t addr, uint8_t * oob_data) = NULL;
-static int (*sm_get_sc_oob_data)(uint8_t addres_type, bd_addr_t addr, uint8_t * oob_sc_peer_confirm, uint8_t * oob_sc_peer_random);
-static bool (*sm_get_ltk_callback)(hci_con_handle_t con_handle, uint8_t addres_type, bd_addr_t addr, uint8_t * ltk);
+	// @return 1 if oob data is available
+	// stores oob data in provided 16 byte buffer if not null
+	static int (*sm_get_oob_data)(uint8_t addres_type, bd_addr_t addr, uint8_t * oob_data) = NULL;
+	static int (*sm_get_sc_oob_data)(uint8_t addres_type, bd_addr_t addr, uint8_t * oob_sc_peer_confirm, uint8_t * oob_sc_peer_random);
+	static bool (*sm_get_ltk_callback)(hci_con_handle_t con_handle, uint8_t addres_type, bd_addr_t addr, uint8_t * ltk);
 
-static void sm_run(void);
-static void sm_state_reset(void);
-static void sm_done_for_handle(hci_con_handle_t con_handle);
-static sm_connection_t * sm_get_connection_for_handle(hci_con_handle_t con_handle);
-static void sm_cache_ltk(sm_connection_t * connection, const sm_key_t ltk);
+	static void sm_run(void);
+	static void sm_state_reset(void);
+	static void sm_done_for_handle(hci_con_handle_t con_handle);
+	static sm_connection_t * sm_get_connection_for_handle(hci_con_handle_t con_handle);
+	static void sm_cache_ltk(sm_connection_t * connection, const sm_key_t ltk);
 #ifdef ENABLE_CROSS_TRANSPORT_KEY_DERIVATION
-static sm_connection_t * sm_get_connection_for_bd_addr_and_type(bd_addr_t address, bd_addr_type_t addr_type);
+	static sm_connection_t * sm_get_connection_for_bd_addr_and_type(bd_addr_t address, bd_addr_type_t addr_type);
 #endif
-static inline int sm_calc_actual_encryption_key_size(int other);
-static int sm_validate_stk_generation_method(void);
-static void sm_handle_encryption_result_address_resolution(void *arg);
-static void sm_handle_encryption_result_dkg_dhk(void *arg);
-static void sm_handle_encryption_result_dkg_irk(void *arg);
-static void sm_handle_encryption_result_enc_a(void *arg);
-static void sm_handle_encryption_result_enc_b(void *arg);
-static void sm_handle_encryption_result_enc_c(void *arg);
-static void sm_handle_encryption_result_enc_csrk(void *arg);
-static void sm_handle_encryption_result_enc_d(void * arg);
-static void sm_handle_encryption_result_enc_ph3_ltk(void *arg);
-static void sm_handle_encryption_result_enc_ph3_y(void *arg);
+	static inline int sm_calc_actual_encryption_key_size(int other);
+	static int sm_validate_stk_generation_method(void);
+	static void sm_handle_encryption_result_address_resolution(void *arg);
+	static void sm_handle_encryption_result_dkg_dhk(void *arg);
+	static void sm_handle_encryption_result_dkg_irk(void *arg);
+	static void sm_handle_encryption_result_enc_a(void *arg);
+	static void sm_handle_encryption_result_enc_b(void *arg);
+	static void sm_handle_encryption_result_enc_c(void *arg);
+	static void sm_handle_encryption_result_enc_csrk(void *arg);
+	static void sm_handle_encryption_result_enc_d(void * arg);
+	static void sm_handle_encryption_result_enc_ph3_ltk(void *arg);
+	static void sm_handle_encryption_result_enc_ph3_y(void *arg);
 #ifdef ENABLE_LE_PERIPHERAL
-static void sm_handle_encryption_result_enc_ph4_ltk(void *arg);
-static void sm_handle_encryption_result_enc_ph4_y(void *arg);
+	static void sm_handle_encryption_result_enc_ph4_ltk(void *arg);
+	static void sm_handle_encryption_result_enc_ph4_y(void *arg);
 #endif
-static void sm_handle_encryption_result_enc_stk(void *arg);
-static void sm_handle_encryption_result_rau(void *arg);
-static void sm_handle_random_result_ph2_tk(void * arg);
-static void sm_handle_random_result_rau(void * arg);
+	static void sm_handle_encryption_result_enc_stk(void *arg);
+	static void sm_handle_encryption_result_rau(void *arg);
+	static void sm_handle_random_result_ph2_tk(void * arg);
+	static void sm_handle_random_result_rau(void * arg);
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
-static void sm_cmac_message_start(const sm_key_t key, uint16_t message_len, const uint8_t * message, void (*done_callback)(uint8_t * hash));
-static void sm_ec_generate_new_key(void);
-static void sm_handle_random_result_sc_next_w2_cmac_for_confirmation(void * arg);
-static void sm_handle_random_result_sc_next_send_pairing_random(void * arg);
-static bool sm_passkey_entry(stk_generation_method_t method);
+	static void sm_cmac_message_start(const sm_key_t key, uint16_t message_len, const uint8_t * message, void (*done_callback)(uint8_t * hash));
+	static void sm_ec_generate_new_key(void);
+	static void sm_handle_random_result_sc_next_w2_cmac_for_confirmation(void * arg);
+	static void sm_handle_random_result_sc_next_send_pairing_random(void * arg);
+	static bool sm_passkey_entry(stk_generation_method_t method);
 #endif
-static void sm_pairing_complete(sm_connection_t * sm_conn, uint8_t status, uint8_t reason);
+	static void sm_pairing_complete(sm_connection_t * sm_conn, uint8_t status, uint8_t reason);
+	static void sm_run_state_sc_send_pake_request(sm_connection_t *connection);
+	static void sm_run_state_sc_send_pake_response(sm_connection_t *connection);
 
-static void log_info_hex16(const char * name, uint16_t value){
-    log_info("%-6s 0x%04x", name, value);
-}
+	static void log_info_hex16(const char * name, uint16_t value){
+		 log_info("%-6s 0x%04x", name, value);
+	}
 
-// static inline uint8_t sm_pairing_packet_get_code(sm_pairing_packet_t packet){
-//     return packet[0];
-// }
-static inline uint8_t sm_pairing_packet_get_io_capability(sm_pairing_packet_t packet){
-    return packet[1];
-}
-static inline uint8_t sm_pairing_packet_get_oob_data_flag(sm_pairing_packet_t packet){
-    return packet[2];
-}
-static inline uint8_t sm_pairing_packet_get_auth_req(sm_pairing_packet_t packet){
-    return packet[3];
-}
-static inline uint8_t sm_pairing_packet_get_max_encryption_key_size(sm_pairing_packet_t packet){
-    return packet[4];
-}
-static inline uint8_t sm_pairing_packet_get_initiator_key_distribution(sm_pairing_packet_t packet){
-    return packet[5];
-}
-static inline uint8_t sm_pairing_packet_get_responder_key_distribution(sm_pairing_packet_t packet){
-    return packet[6];
-}
+	// static inline uint8_t sm_pairing_packet_get_code(sm_pairing_packet_t packet){
+	//     return packet[0];
+	// }
+	static inline uint8_t sm_pairing_packet_get_io_capability(sm_pairing_packet_t packet){
+		 return packet[1];
+	}
+	static inline uint8_t sm_pairing_packet_get_oob_data_flag(sm_pairing_packet_t packet){
+		 return packet[2];
+	}
+	static inline uint8_t sm_pairing_packet_get_auth_req(sm_pairing_packet_t packet){
+		 return packet[3];
+	}
+	static inline uint8_t sm_pairing_packet_get_max_encryption_key_size(sm_pairing_packet_t packet){
+		 return packet[4];
+	}
+	static inline uint8_t sm_pairing_packet_get_initiator_key_distribution(sm_pairing_packet_t packet){
+		 return packet[5];
+	}
+	static inline uint8_t sm_pairing_packet_get_responder_key_distribution(sm_pairing_packet_t packet){
+		 return packet[6];
+	}
 
-static inline void sm_pairing_packet_set_code(sm_pairing_packet_t packet, uint8_t code){
-    packet[0] = code;
-}
-static inline void sm_pairing_packet_set_io_capability(sm_pairing_packet_t packet, uint8_t io_capability){
-    packet[1] = io_capability;
-}
-static inline void sm_pairing_packet_set_oob_data_flag(sm_pairing_packet_t packet, uint8_t oob_data_flag){
-    packet[2] = oob_data_flag;
-}
-static inline void sm_pairing_packet_set_auth_req(sm_pairing_packet_t packet, uint8_t auth_req){
-    packet[3] = auth_req;
-}
-static inline void sm_pairing_packet_set_max_encryption_key_size(sm_pairing_packet_t packet, uint8_t max_encryption_key_size){
-    packet[4] = max_encryption_key_size;
-}
-static inline void sm_pairing_packet_set_initiator_key_distribution(sm_pairing_packet_t packet, uint8_t initiator_key_distribution){
-    packet[5] = initiator_key_distribution;
-}
-static inline void sm_pairing_packet_set_responder_key_distribution(sm_pairing_packet_t packet, uint8_t responder_key_distribution){
-    packet[6] = responder_key_distribution;
-}
+	static inline void sm_pairing_packet_set_code(sm_pairing_packet_t packet, uint8_t code){
+		 packet[0] = code;
+	}
+	static inline void sm_pairing_packet_set_io_capability(sm_pairing_packet_t packet, uint8_t io_capability){
+		 packet[1] = io_capability;
+	}
+	static inline void sm_pairing_packet_set_oob_data_flag(sm_pairing_packet_t packet, uint8_t oob_data_flag){
+		 packet[2] = oob_data_flag;
+	}
+	static inline void sm_pairing_packet_set_auth_req(sm_pairing_packet_t packet, uint8_t auth_req){
+		 packet[3] = auth_req;
+	}
+	static inline void sm_pairing_packet_set_max_encryption_key_size(sm_pairing_packet_t packet, uint8_t max_encryption_key_size){
+		 packet[4] = max_encryption_key_size;
+	}
+	static inline void sm_pairing_packet_set_initiator_key_distribution(sm_pairing_packet_t packet, uint8_t initiator_key_distribution){
+		 packet[5] = initiator_key_distribution;
+	}
+	static inline void sm_pairing_packet_set_responder_key_distribution(sm_pairing_packet_t packet, uint8_t responder_key_distribution){
+		 packet[6] = responder_key_distribution;
+	}
 
-static bool sm_is_null_random(uint8_t random[8]){
-    return btstack_is_null(random, 8);
-}
+	static bool sm_is_null_random(uint8_t random[8]){
+		 return btstack_is_null(random, 8);
+	}
 
-static bool sm_is_null_key(uint8_t * key){
-    return btstack_is_null(key, 16);
-}
+	static bool sm_is_null_key(uint8_t * key){
+		 return btstack_is_null(key, 16);
+	}
 
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
-static bool sm_is_ff(const uint8_t * buffer, uint16_t size){
-    uint16_t i;
-    for (i=0; i < size ; i++){
-        if (buffer[i] != 0xff) {
-            return false;
-        }
-    }
-    return true;
-}
+	static bool sm_is_ff(const uint8_t * buffer, uint16_t size){
+		 uint16_t i;
+		 for (i=0; i < size ; i++){
+			  if (buffer[i] != 0xff) {
+					return false;
+			  }
+		 }
+		 return true;
+	}
 #endif
 
-// sm_trigger_run allows to schedule callback from main run loop // reduces stack depth
-static void sm_run_timer_handler(btstack_timer_source_t * ts){
-	UNUSED(ts);
-	sm_run();
-}
-static void sm_trigger_run(void){
-    if (!sm_initialized) return;
-	(void)btstack_run_loop_remove_timer(&sm_run_timer);
-	btstack_run_loop_set_timer(&sm_run_timer, 0);
-	btstack_run_loop_add_timer(&sm_run_timer);
-}
+	// sm_trigger_run allows to schedule callback from main run loop // reduces stack depth
+	static void sm_run_timer_handler(btstack_timer_source_t * ts){
+		UNUSED(ts);
+		sm_run();
+	}
+	static void sm_trigger_run(void){
+		 if (!sm_initialized) return;
+		(void)btstack_run_loop_remove_timer(&sm_run_timer);
+		btstack_run_loop_set_timer(&sm_run_timer, 0);
+		btstack_run_loop_add_timer(&sm_run_timer);
+	}
 
-// Key utils
-static void sm_reset_tk(void){
-    int i;
-    for (i=0;i<16;i++){
-        setup->sm_tk[i] = 0;
+	// Key utils
+	static void sm_reset_tk(void){
+		 int i;
+		 for (i=0;i<16;i++){
+			  setup->sm_tk[i] = 0;
     }
 }
 
@@ -1053,6 +1060,13 @@ static void sm_trigger_user_response_passkey(sm_connection_t * sm_conn, uint8_t 
     event[11] = setup->sm_use_secure_connections ? 1 : 0;
     little_endian_store_32(event, 12, passkey);
     sm_dispatch_event(HCI_EVENT_PACKET, 0, event, sizeof(event));
+
+	if(sm_passkey_entry(setup->sm_stk_generation_method))
+	{
+		/* Start PAKE step */
+		/* As we are the Sender, wait for PAKE Request message */
+		sm_conn->sm_engine_state = SM_SC_W4_PAKE_REQ;
+	}
 }
 
 static void sm_trigger_user_response(sm_connection_t * sm_conn){
@@ -1646,7 +1660,24 @@ static void sm_sc_state_after_receiving_random(sm_connection_t * sm_conn){
             // generate Nb
             log_info("Generate Nb");
             btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_nonce, 16, &sm_handle_random_result_sc_next_send_pairing_random, (void *)(uintptr_t) sm_conn->sm_handle);
-        } else {
+        }
+        else if(sm_passkey_entry(setup->sm_stk_generation_method))
+        {
+				if((!IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+				{
+					/* XPE: We are Sender */
+					/* TODO should not happen */
+					sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G4;
+				}
+				else
+				{
+					/* XPE: We are Receiver */
+					sm_conn->sm_engine_state = SM_SC_W2_G4_FOR_CHECK_CONFIRMATION;
+				}
+		  }
+		  else
+		  {
+
             sm_conn->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
         }
     } else {
@@ -1660,17 +1691,29 @@ static void sm_sc_state_after_receiving_random(sm_connection_t * sm_conn){
                 sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G2;
                 break;
             case PK_INIT_INPUT:
-            case PK_RESP_INPUT:
-            case PK_BOTH_INPUT:
-                if (setup->sm_passkey_bit < 20u) {
-                    sm_sc_start_calculating_local_confirm(sm_conn);
-                } else {
-                    sm_sc_prepare_dhkey_check(sm_conn);
-                }
-                break;
+				case PK_RESP_INPUT:
+
+					if((!IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+					{
+						/* XPE: We are Sender */
+						/* TODO should not happen */
+						sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G4;
+					}
+					else
+					{
+						/* XPE: We are Receiver */
+						sm_conn->sm_engine_state = SM_SC_W2_G4_FOR_CHECK_CONFIRMATION;
+					}
+					// if (setup->sm_passkey_bit < 20u) {
+					//     sm_sc_start_calculating_local_confirm(sm_conn);
+					// } else {
+					//     sm_sc_prepare_dhkey_check(sm_conn);
+					// }
+					break;
             case OOB:
                 sm_sc_prepare_dhkey_check(sm_conn);
                 break;
+            case PK_BOTH_INPUT:
             default:
                 btstack_assert(false);
                 break;
@@ -1707,9 +1750,41 @@ static void sm_sc_cmac_done(uint8_t * hash){
             }
             sm_sc_state_after_receiving_random(sm_conn);
             break;
+        case SM_SC_W4_G4_FOR_CHECK_CONFIRMATION:
+			{
+				uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
+				uint32_t passkey = big_endian_read_32(setup->sm_tk, 12);
+
+            /* XPE: check s == s' */
+            if (vab != passkey){
+                sm_pairing_error(sm_conn, SM_REASON_CONFIRM_VALUE_FAILED);
+                break;
+            }
+            // /* XPE: Now xor the pake_key (tk_2) and dhkey (tk_1) */
+            // for(int i = 0; i < 32; i++)
+				// {
+				// 	setup->sm_dhkey[i] ^= setup->sm_pake_key[i];
+				// }
+            
+				/* Then finish authentication phase and proceed to LTK check */
+				sm_sc_prepare_dhkey_check(sm_conn);
+            break;
+			}
         case SM_SC_W4_CALCULATE_G2: {
             uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
             big_endian_store_32(setup->sm_tk, 12, vab);
+            sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
+            sm_trigger_user_response(sm_conn);
+            break;
+        }
+        case SM_SC_W4_CALCULATE_G4: {
+        		/* XPE */
+            uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
+            big_endian_store_32(setup->sm_tk, 12, vab);
+
+				/* Save passkey as ra and rb values for later validation steps */
+            (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
+            (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
             sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
             sm_trigger_user_response(sm_conn);
             break;
@@ -1734,6 +1809,7 @@ static void sm_sc_cmac_done(uint8_t * hash){
             break;
         case SM_SC_W4_CALCULATE_F6_FOR_DHKEY_CHECK:
             (void)memcpy(setup->sm_local_dhkey_check, hash, 16);
+
             if (IS_RESPONDER(sm_conn->sm_role)){
                 // responder
                 if ((setup->sm_state_vars & SM_STATE_VAR_DHKEY_COMMAND_RECEIVED) != 0u){
@@ -1746,6 +1822,7 @@ static void sm_sc_cmac_done(uint8_t * hash){
             }
             break;
         case SM_SC_W4_CALCULATE_F6_TO_VERIFY_DHKEY_CHECK:
+
             if (0 != memcmp(hash, setup->sm_peer_dhkey_check, 16) ){
                 sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
                 break;
@@ -1889,6 +1966,7 @@ static void f6_setup(const sm_key_t n1, const sm_key_t n2, const sm_key_t r, con
 static void f6_engine(sm_connection_t * sm_conn, const sm_key_t w){
     const uint16_t message_len = 65;
     sm_cmac_connection = sm_conn;
+
     log_info("f6 key");
     log_info_hexdump(w, 16);
     log_info("f6 message");
@@ -1914,6 +1992,30 @@ static void g2_engine(sm_connection_t * sm_conn, const sm_key256_t u, const sm_k
     sm_cmac_message_start(x, message_len, sm_cmac_sc_buffer, &sm_sc_cmac_done);
 }
 
+static void g4_engine(sm_connection_t * sm_conn, const sm_key256_t u, const sm_key256_t v, const sm_key_t x, const sm_key_t y){
+	const uint16_t message_len = 80;
+	sm_cmac_connection = sm_conn;
+	(void)memcpy(sm_cmac_sc_buffer, u, 32);
+	(void)memcpy(sm_cmac_sc_buffer + 32, v, 32);
+	(void)memcpy(sm_cmac_sc_buffer + 64, y, 16);
+	sm_cmac_message_start(x, message_len, sm_cmac_sc_buffer, &sm_sc_cmac_done);
+}
+
+static void g4_calculate(sm_connection_t * sm_conn) {
+	/* XPE: calculate s */
+
+	if((!IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+	{
+		/* XPE: We are Sender */
+		g4_engine(sm_conn, ec_q, setup->sm_peer_q, setup->sm_local_nonce, setup->sm_peer_nonce);
+	}
+	else
+	{
+		/* XPE: We are Receiver */
+		g4_engine(sm_conn, setup->sm_peer_q, ec_q, setup->sm_peer_nonce, setup->sm_local_nonce);;
+	}
+}
+
 static void g2_calculate(sm_connection_t * sm_conn) {
     // calc Va if numeric comparison
     if (IS_RESPONDER(sm_conn->sm_role)){
@@ -1925,14 +2027,35 @@ static void g2_calculate(sm_connection_t * sm_conn) {
     }
 }
 
+static void pake_calculate_request(sm_connection_t * sm_conn)
+{
+	/* XPE */
+	char fake_key[] = {0x43, 0x90, 0xc0, 0xe8, 0xab, 0xf1, 0xa7, 0x25, 0x6f, 0x45, 0x64, 0x3c, 0xbd, 0x55, 0x71, 0xb1, 0xb4, 0x29, 0x6b, 0x1e, 0x9a, 0x9d, 0x13, 0x1b, 0x9e, 0xa6, 0x88, 0x8d, 0xb8, 0xba, 0x75, 0x61};
+
+	for(int i = 0; i < 32; i++)
+	{
+		setup->sm_local_pake_payload[i] = fake_key[i] ^ ((uint8_t *)setup->sm_tk)[i % 12];
+
+		/* TODO */
+		setup->sm_pake_key[i] = fake_key[i];
+	}
+
+	/* Send the request right away */
+	sm_run_state_sc_send_pake_request(sm_conn);
+	// sm_conn->sm_engine_state = SM_SC_SEND_PAKE;
+	// sm_trigger_run();
+
+}
+
 static void sm_sc_calculate_local_confirm(sm_connection_t * sm_conn){
     uint8_t z = 0;
-    if (sm_passkey_entry(setup->sm_stk_generation_method)){
-        // some form of passkey
-        uint32_t pk = big_endian_read_32(setup->sm_tk, 12);
-        z = 0x80u | ((pk >> setup->sm_passkey_bit) & 1u);
-        setup->sm_passkey_bit++;
-    }
+    /* XNC */
+    // if (sm_passkey_entry(setup->sm_stk_generation_method)){
+    //     // some form of passkey
+    //     uint32_t pk = big_endian_read_32(setup->sm_tk, 12);
+    //     z = 0x80u | ((pk >> setup->sm_passkey_bit) & 1u);
+    //     setup->sm_passkey_bit++;
+    // }
     f4_engine(sm_conn, ec_q, setup->sm_peer_q, setup->sm_local_nonce, z);
 }
 
@@ -1948,17 +2071,29 @@ static void sm_sc_calculate_remote_confirm(sm_connection_t * sm_conn){
     }
 
     uint8_t z = 0;
-    if (sm_passkey_entry(setup->sm_stk_generation_method)){
-        // some form of passkey
-        uint32_t pk = big_endian_read_32(setup->sm_tk, 12);
-        // sm_passkey_bit was increased before sending confirm value
-        z = 0x80u | ((pk >> (setup->sm_passkey_bit-1u)) & 1u);
-    }
+    /* XPE */
+    // if (sm_passkey_entry(setup->sm_stk_generation_method)){
+    //     // some form of passkey
+    //     uint32_t pk = big_endian_read_32(setup->sm_tk, 12);
+    //     // sm_passkey_bit was increased before sending confirm value
+    //     z = 0x80u | ((pk >> (setup->sm_passkey_bit-1u)) & 1u);
+    // }
     f4_engine(sm_conn, setup->sm_peer_q, ec_q, setup->sm_peer_nonce, z);
 }
 
+
 static void sm_sc_prepare_dhkey_check(sm_connection_t * sm_conn){
     log_info("sm_sc_prepare_dhkey_check, DHKEY calculated %u", (setup->sm_state_vars & SM_STATE_VAR_DHKEY_CALCULATED) != 0 ? 1 : 0);
+
+	if(sm_passkey_entry(setup->sm_stk_generation_method))
+	{
+
+		/* XPE: Now xor the pake_key (tk_2) and dhkey (tk_1) */
+		for(int i = 0; i < 32; i++)
+		{
+			setup->sm_dhkey[i] ^= setup->sm_pake_key[i];
+		}
+	}
 
     if ((setup->sm_state_vars & SM_STATE_VAR_DHKEY_CALCULATED) != 0u){
         sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_F5_SALT;
@@ -2645,11 +2780,42 @@ static void sm_run_state_sc_send_confirmation(sm_connection_t *connection) {
     uint8_t buffer[17];
     buffer[0] = SM_CODE_PAIRING_CONFIRM;
     reverse_128(setup->sm_local_confirm, &buffer[1]);
-    if (IS_RESPONDER(connection->sm_role)){
-        connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
-    } else {
-        connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
-    }
+	if (IS_RESPONDER(connection->sm_role))
+	{
+		if(setup->sm_stk_generation_method == PK_INIT_INPUT)
+		{
+			/* XPE: We are Sender */
+			connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+		}
+		else if(setup->sm_stk_generation_method == PK_RESP_INPUT)
+		{
+			/* XPE: We are Receiver */
+			printf("Should not happen\n");
+			btstack_assert(false);
+		}
+		else
+		{
+			connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+		}
+	}
+	else
+	{
+		if(setup->sm_stk_generation_method == PK_RESP_INPUT)
+		{
+			/* XPE: We are Sender */
+			connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+		}
+		else if(setup->sm_stk_generation_method == PK_INIT_INPUT)
+		{
+			/* XPE: We are Receiver */
+			printf("Should not happen\n");
+			btstack_assert(false);
+		}
+		else
+		{
+			connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
+		}
+	}
     sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
     sm_timeout_reset(connection);
 }
@@ -2657,17 +2823,33 @@ static void sm_run_state_sc_send_confirmation(sm_connection_t *connection) {
 static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
     uint8_t buffer[17];
     buffer[0] = SM_CODE_PAIRING_RANDOM;
+    bool trigger_user_response = false;
+    bool enter_dhkey_check = false;
     reverse_128(setup->sm_local_nonce, &buffer[1]);
     log_info("stk method %u, bit num: %u", setup->sm_stk_generation_method, setup->sm_passkey_bit);
-    if (sm_passkey_entry(setup->sm_stk_generation_method) && (setup->sm_passkey_bit < 20u)){
+    if(sm_passkey_entry(setup->sm_stk_generation_method))
+	 {
         log_info("SM_SC_SEND_PAIRING_RANDOM A");
-        if (IS_RESPONDER(connection->sm_role)){
-            // responder
-            connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
-        } else {
-            // initiator
-            connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
-        }
+
+		if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+		{
+			/* XPE: We are Sender */
+			enter_dhkey_check = true;
+		}
+		else
+		{
+			/* XPE: We are Receiver */
+			/* Wait for input of s value */
+			connection->sm_engine_state = SM_SC_W4_USER_RESPONSE;
+			trigger_user_response = true;
+		}
+		// if (IS_RESPONDER(connection->sm_role)){
+		//     // responder
+		//     connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
+		// } else {
+		//     // initiator
+		//     connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+		// }
     } else {
         log_info("SM_SC_SEND_PAIRING_RANDOM B");
         if (IS_RESPONDER(connection->sm_role)){
@@ -2684,8 +2866,13 @@ static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
             connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
         }
     }
+
     sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
     sm_timeout_reset(connection);
+	if(trigger_user_response)
+		sm_trigger_user_response(connection);
+	if(enter_dhkey_check)
+		sm_sc_prepare_dhkey_check(connection);
 }
 
 static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection) {
@@ -2701,6 +2888,55 @@ static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection
 
     sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
     sm_timeout_reset(connection);
+}
+
+static void sm_run_state_sc_send_pake_request(sm_connection_t *connection)
+{
+	uint8_t buffer[33];
+	buffer[0] = SM_CODE_PAIRING_PAKE_REQ;
+	reverse_256(setup->sm_local_pake_payload, &buffer[1]);
+
+	// if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+	// {
+	// 	/* XPE: We are Sender */
+	// 	/* Now send local Nonce */
+	// 	connection->sm_engine_state = SM_SC_W4_PAKE_RESP;
+	// }
+	// else
+	// {
+	// 	/* XPE: We are Receiver */
+	// 	printf("Should not happen\n");
+	// 	btstack_assert(false);
+	// }
+	connection->sm_engine_state = SM_SC_W4_PAKE_RESP;
+
+	sm_send_connectionless(connection, (uint8_t*)buffer, sizeof(buffer));
+	sm_timeout_reset(connection);
+}
+
+static void sm_run_state_sc_send_pake_response(sm_connection_t *connection)
+{
+	uint8_t buffer[33];
+	buffer[0] = SM_CODE_PAIRING_PAKE_RESP;
+	// reverse_256(setup->sm_local_pake_payload, &buffer[1]);
+
+	// if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+	// {
+	// 	/* XPE: We are Sender */
+	// 	printf("Should not happen\n");
+	// 	btstack_assert(false);
+	// }
+	// else
+	// {
+	// 	/* XPE: We are Receiver */
+	// 	connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+	// }
+
+	/* XPE: We should be Sender and thus now wait also will send the pairing random */
+	connection->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+
+	sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
+	sm_timeout_reset(connection);
 }
 
 static void sm_run_state_sc_send_public_key_command(sm_connection_t *connection) {
@@ -2735,21 +2971,42 @@ static void sm_run_state_sc_send_public_key_command(sm_connection_t *connection)
             }
             break;
         case PK_INIT_INPUT:
-        case PK_RESP_INPUT:
-        case PK_BOTH_INPUT:
-            // use random TK for display
-            (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
-            (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
-            setup->sm_passkey_bit = 0;
+				if(IS_RESPONDER(connection->sm_role))
+				{
+					/* XPE: We are Sender AND Responder */
+					sm_sc_start_calculating_local_confirm(connection);
+					/* Note: For the Initiator this is done later when pubkeys are recieved in the sm_pdu_handler */
+				}
+				else
+				{
+					/* XPE: We are Receiver AND Initiator */
+					connection->sm_engine_state = SM_SC_W4_PUBLIC_KEY_COMMAND;
+				}
+				break;
+			case PK_RESP_INPUT:
+				if(!IS_RESPONDER(connection->sm_role))
+				{
+					/* XPE: We are Sender and Initiator */
+					connection->sm_engine_state = SM_SC_W4_PUBLIC_KEY_COMMAND;
+				}
+				else
+				{
+					/* XPE: We are Receiver AND Responder */
+					connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
+				}
+        		/* XPE Patching */
+            // // use random TK for display
+            // (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
+            // (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
+            // setup->sm_passkey_bit = 0;
 
-            if (IS_RESPONDER(connection->sm_role)){
-                // responder
-                connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
-            } else {
-                // initiator
-                connection->sm_engine_state = SM_SC_W4_PUBLIC_KEY_COMMAND;
-            }
-            trigger_user_response = true;
+            // if (IS_RESPONDER(connection->sm_role)){
+            //     // responder
+            //     connection->sm_engine_state = SM_SC_W4_CONFIRMATION;
+            // } else {
+            //     // initiator
+            // }
+            // // trigger_user_response = true;
             break;
         case OOB:
             if (IS_RESPONDER(connection->sm_role)){
@@ -2877,6 +3134,11 @@ static void sm_run(void){
                 connection->sm_engine_state = SM_SC_W4_CMAC_FOR_CHECK_CONFIRMATION;
                 sm_sc_calculate_remote_confirm(connection);
                 break;
+            case SM_SC_W2_G4_FOR_CHECK_CONFIRMATION:
+            	 /* XPE */
+                connection->sm_engine_state = SM_SC_W4_G4_FOR_CHECK_CONFIRMATION;
+                g4_calculate(connection);
+                break;
             case SM_SC_W2_CALCULATE_F6_FOR_DHKEY_CHECK:
                 connection->sm_engine_state = SM_SC_W4_CALCULATE_F6_FOR_DHKEY_CHECK;
                 sm_sc_calculate_f6_for_dhkey_check(connection);
@@ -2900,6 +3162,16 @@ static void sm_run(void){
             case SM_SC_W2_CALCULATE_G2:
                 connection->sm_engine_state = SM_SC_W4_CALCULATE_G2;
                 g2_calculate(connection);
+                break;
+            case SM_SC_W2_CALCULATE_PAKE_REQ:
+            	 /* XPE */
+                // connection->sm_engine_state = SM_SC_W4_CALCULATE_PAKE;
+                pake_calculate_request(connection); /* Will also send it right away */
+                break;
+            case SM_SC_W2_CALCULATE_G4:
+            	 /* XPE */
+                connection->sm_engine_state = SM_SC_W4_CALCULATE_G4;
+                g4_calculate(connection);
                 break;
 #endif
 
@@ -2950,9 +3222,18 @@ static void sm_run(void){
             case SM_SC_SEND_PAIRING_RANDOM:
                 sm_run_state_sc_send_pairing_random(connection);
                 break;
+            case SM_SC_SEND_PAKE_REQUEST:
+                sm_run_state_sc_send_pake_request(connection);
+                break;
+            case SM_SC_SEND_PAKE_RESPONSE:
+                sm_run_state_sc_send_pake_response(connection);
+                break;
             case SM_SC_SEND_DHKEY_CHECK_COMMAND:
                 sm_run_state_sc_send_dhkey_check_command(connection);
                 break;
+            // case SM_SC_SEND_PAKE:
+            //     sm_run_state_sc_send_pake(connection);
+            //     break;
 #endif
 
 #ifdef ENABLE_LE_PERIPHERAL
@@ -4354,6 +4635,8 @@ static uint8_t sm_pdu_validate_and_get_opcode(uint8_t packet_type, const uint8_t
             65, // 0x0c pairing public key
             17, // 0x0d pairing dhk check
             2,  // 0x0e keypress notification
+            33,  // 0x0f pairing pake request
+            33,  // 0x10 pairing pake response
     };
 
     if (packet_type != SM_DATA_PACKET) return 0;
@@ -4539,6 +4822,41 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 #endif
 
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
+
+			case SM_SC_W4_PAKE_REQ:
+			{
+				uint8_t pake_req[32];
+				/* XPE */
+				if (sm_pdu_code != SM_CODE_PAIRING_PAKE_REQ){
+					sm_pdu_received_in_wrong_state(sm_conn);
+					break;
+				}
+				reverse_256(packet + 1, pake_req);
+
+				/* TODO conduct PAKE */
+
+				for(int i = 0; i < 32; i++)
+				{
+					/* TODO */
+					setup->sm_pake_key[i] = pake_req[i] ^ ((uint8_t *)setup->sm_tk)[i % 12];
+				}
+
+				/* Send PAKE response */
+				sm_conn->sm_engine_state = SM_SC_SEND_PAKE_RESPONSE;
+			}
+				break;
+
+			case SM_SC_W4_PAKE_RESP:
+				/* XPE */
+				if (sm_pdu_code != SM_CODE_PAIRING_PAKE_RESP){
+					sm_pdu_received_in_wrong_state(sm_conn);
+					break;
+				}
+				/* TODO conduct PAKE */
+
+				/* Now send pairing random */
+				sm_conn->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+				break;
         case SM_SC_W4_PUBLIC_KEY_COMMAND:
             if (sm_pdu_code != SM_CODE_PAIRING_PUBLIC_KEY){
                 sm_pdu_received_in_wrong_state(sm_conn);
@@ -4571,7 +4889,7 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
             log_info("public key received, generation method %u", setup->sm_stk_generation_method);
             if (IS_RESPONDER(sm_conn->sm_role)){
                 // responder
-                sm_conn->sm_engine_state = SM_SC_SEND_PUBLIC_KEY_COMMAND;
+					sm_conn->sm_engine_state = SM_SC_SEND_PUBLIC_KEY_COMMAND;
             } else {
                 // initiator
                 // stk generation method
@@ -4582,16 +4900,21 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
                         sm_conn->sm_engine_state = SM_SC_W4_CONFIRMATION;
                         break;
                     case PK_RESP_INPUT:
+                    		/* XPE: We are Sender */
                         sm_sc_start_calculating_local_confirm(sm_conn);
                         break;
                     case PK_INIT_INPUT:
-                    case PK_BOTH_INPUT:
-                        if (setup->sm_user_response != SM_USER_RESPONSE_PASSKEY){
-                            sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
-                            break;
-                        }
-                        sm_sc_start_calculating_local_confirm(sm_conn);
+                    		/* XPE: We are Receiver */
+                        // if (setup->sm_user_response != SM_USER_RESPONSE_PASSKEY){
+                        //     sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
+                        //     break;
+                        // }
+                        // sm_sc_start_calculating_local_confirm(sm_conn);
+								sm_conn->sm_engine_state = SM_SC_W4_CONFIRMATION;
                         break;
+                    case PK_BOTH_INPUT:
+								printf("Not implemented\n");
+								btstack_assert(false);
                     case OOB:
                         // generate Nx
                         log_info("Generate Na");
@@ -4618,25 +4941,55 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
                 memset(setup->sm_peer_confirm, 0, 16);
             }
 #endif
-            if (IS_RESPONDER(sm_conn->sm_role)){
-                // responder
-                if (sm_passkey_used(setup->sm_stk_generation_method)){
-                    if (setup->sm_user_response != SM_USER_RESPONSE_PASSKEY){
-                        // still waiting for passkey
-                        sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
-                        break;
-                    }
-                }
-                sm_sc_start_calculating_local_confirm(sm_conn);
-            } else {
-                // initiator
-                if (sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method)){
-                    btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_nonce, 16, &sm_handle_random_result_sc_next_send_pairing_random, (void*)(uintptr_t) sm_conn->sm_handle);
-                } else {
-                    sm_conn->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
-                }
-            }
-            break;
+				if (IS_RESPONDER(sm_conn->sm_role))
+				{
+					// responder
+					if (sm_passkey_used(setup->sm_stk_generation_method))
+					{
+						if(setup->sm_stk_generation_method == PK_INIT_INPUT)
+						{
+							/* XPE: We are Sender */
+							printf("Should not happen\n");
+							btstack_assert(false);
+						}
+						else
+						{
+							/* XPE: We are Receiver */
+							sm_conn->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+						}
+						// if (setup->sm_user_response != SM_USER_RESPONSE_PASSKEY){
+						//     // still waiting for passkey
+						//     sm_conn->sm_engine_state = SM_SC_W4_USER_RESPONSE;
+						//     break;
+						// }
+					}
+					else
+					{
+						sm_sc_start_calculating_local_confirm(sm_conn);
+					}
+				}
+				else
+				{
+					// initiator
+					if (sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method)){
+						btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_nonce, 16, &sm_handle_random_result_sc_next_send_pairing_random, (void*)(uintptr_t) sm_conn->sm_handle);
+					}
+					else
+					{
+						if(setup->sm_stk_generation_method == PK_RESP_INPUT)
+						{
+							/* XPE: We are Sender */
+							printf("Should not happen\n");
+							btstack_assert(false);
+						}
+						else
+						{
+							/* XPE: We are Receiver */
+							sm_conn->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+						}
+					}
+				}
+				break;
 
         case SM_SC_W4_PAIRING_RANDOM:
             if (sm_pdu_code != SM_CODE_PAIRING_RANDOM){
@@ -4652,11 +5005,29 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
             log_info("SM_SC_W4_PAIRING_RANDOM, responder: %u, just works: %u, passkey used %u, passkey entry %u",
                      IS_RESPONDER(sm_conn->sm_role), sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method),
                      sm_passkey_used(setup->sm_stk_generation_method), sm_passkey_entry(setup->sm_stk_generation_method));
-            if ( (!IS_RESPONDER(sm_conn->sm_role) && sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method))
-            ||   (sm_passkey_entry(setup->sm_stk_generation_method)) ) {
+            
+            if ( (!IS_RESPONDER(sm_conn->sm_role) && sm_just_works_or_numeric_comparison(setup->sm_stk_generation_method)))
+            {
                  sm_conn->sm_engine_state = SM_SC_W2_CMAC_FOR_CHECK_CONFIRMATION;
                  break;
+
             }
+
+            if(sm_passkey_entry(setup->sm_stk_generation_method))
+				{
+					if((!IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(sm_conn->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
+					{
+						/* XPE: We are Sender */
+						sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_G4;
+					}
+					else
+					{
+						/* XPE: We are Receiver */
+						/* Receive Sender nonce after PAKE succeeded and check if it matches the Confirm message from earlier */
+						sm_conn->sm_engine_state = SM_SC_W2_CMAC_FOR_CHECK_CONFIRMATION;
+					}
+					break;
+				}
 
             // OOB
             if (setup->sm_stk_generation_method == OOB){
@@ -5365,27 +5736,56 @@ void sm_just_works_confirm(hci_con_handle_t con_handle){
 }
 
 void sm_numeric_comparison_confirm(hci_con_handle_t con_handle){
-    // for now, it's the same
-    sm_just_works_confirm(con_handle);
+	// for now, it's the same
+
+	/* XNC Patch */
+	sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
+	/* Check if we are already in second round */
+	if(second_stage)
+	{
+		sm_just_works_confirm(con_handle);
+	}
+	else
+	{
+		second_stage = true;
+
+		if(IS_RESPONDER(sm_conn->sm_role))
+		{
+			sm_conn->sm_engine_state = SM_SC_W4_LOCAL_NONCE;
+			sm_sc_start_calculating_local_confirm(sm_conn);
+		}
+		else
+		{
+			sm_conn->sm_engine_state = SM_SC_W4_CONFIRMATION;
+		}
+	}
+	sm_trigger_run();
 }
 
 void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
     sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
     if (!sm_conn) return;     // wrong connection
-    sm_reset_tk();
+		 sm_reset_tk();
     big_endian_store_32(setup->sm_tk, 12, passkey);
+
     setup->sm_user_response = SM_USER_RESPONSE_PASSKEY;
-    if (sm_conn->sm_engine_state == SM_PH1_W4_USER_RESPONSE){
-        btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_random, 16, &sm_handle_random_result_ph2_random, (void *)(uintptr_t) sm_conn->sm_handle);
-    }
+    /* XPE */
+    // if (sm_conn->sm_engine_state == SM_PH1_W4_USER_RESPONSE){
+    //     btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_random, 16, &sm_handle_random_result_ph2_random, (void *)(uintptr_t) sm_conn->sm_handle);
+    // }
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
     (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
     (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
-    if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
-        sm_sc_start_calculating_local_confirm(sm_conn);
-    }
+    /* XPE */
+    // if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
+    //     sm_sc_start_calculating_local_confirm(sm_conn);
+    // }
 #endif
-    sm_trigger_run();
+	/* XPE */
+	/* Start PAKE by calculating and sending PAKE request */
+	sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_PAKE_REQ;
+
+	sm_trigger_run();
 }
 
 void sm_keypress_notification(hci_con_handle_t con_handle, uint8_t action){

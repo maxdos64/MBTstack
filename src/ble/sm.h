@@ -48,6 +48,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdio.h>
 #include "btstack_util.h"
 #include "btstack_defines.h"
 #include "hci.h"
