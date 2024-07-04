@@ -346,7 +346,9 @@ typedef struct sm_setup_context {
 		 sm_key_t  sm_peer_nonce;    // might be combined with sm_peer_random
 		 sm_key_t  sm_local_nonce;   // might be combined with sm_local_random
 		 uint8_t   sm_dhkey[32];
-		 uint8_t   sm_local_pake_payload[32];
+		 unsigned char public_pake_data[crypto_cpace_PUBLICDATABYTES];
+		 unsigned char pake_response[crypto_cpace_RESPONSEBYTES];
+		 crypto_cpace_state ctx;
 		 uint8_t   sm_pake_key[32];
 		 sm_key_t  sm_peer_dhkey_check;
 		 sm_key_t  sm_local_dhkey_check;
@@ -2029,16 +2031,31 @@ static void g2_calculate(sm_connection_t * sm_conn) {
 
 static void pake_calculate_request(sm_connection_t * sm_conn)
 {
+	uint32_t passkey;
 	/* XPE */
-	char fake_key[] = {0x43, 0x90, 0xc0, 0xe8, 0xab, 0xf1, 0xa7, 0x25, 0x6f, 0x45, 0x64, 0x3c, 0xbd, 0x55, 0x71, 0xb1, 0xb4, 0x29, 0x6b, 0x1e, 0x9a, 0x9d, 0x13, 0x1b, 0x9e, 0xa6, 0x88, 0x8d, 0xb8, 0xba, 0x75, 0x61};
+	// char fake_key[] = {0x43, 0x90, 0xc0, 0xe8, 0xab, 0xf1, 0xa7, 0x25, 0x6f, 0x45, 0x64, 0x3c, 0xbd, 0x55, 0x71, 0xb1, 0xb4, 0x29, 0x6b, 0x1e, 0x9a, 0x9d, 0x13, 0x1b, 0x9e, 0xa6, 0x88, 0x8d, 0xb8, 0xba, 0x75, 0x61};
 
-	for(int i = 0; i < 32; i++)
+	if(crypto_cpace_init() != 0)
+		btstack_assert(false);
+	passkey = big_endian_read_32(setup->sm_tk, 12);
+
+	/* [CLIENT SIDE] Compute public data to be sent to the server/Sender */
+	if (crypto_cpace_step1(&setup->ctx, setup->public_pake_data, (const char *)&passkey, sizeof(passkey),
+			PAKE_CLIENT_ID, sizeof(PAKE_CLIENT_ID) - 1, PAKE_SERVER_ID,
+			sizeof(PAKE_SERVER_ID) - 1,
+			0,
+			0) != 0)
 	{
-		setup->sm_local_pake_payload[i] = fake_key[i] ^ ((uint8_t *)setup->sm_tk)[i % 12];
-
-		/* TODO */
-		setup->sm_pake_key[i] = fake_key[i];
+		btstack_assert(false);
 	}
+
+	// for(int i = 0; i < 32; i++)
+	// {
+	// 	setup->sm_local_pake_payload[i] = fake_key[i] ^ ((uint8_t *)setup->sm_tk)[i % 12];
+
+	// 	/* TODO */
+	// 	setup->sm_pake_key[i] = fake_key[i];
+	// }
 
 	/* Send the request right away */
 	sm_run_state_sc_send_pake_request(sm_conn);
@@ -2892,10 +2909,10 @@ static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection
 
 static void sm_run_state_sc_send_pake_request(sm_connection_t *connection)
 {
-	uint8_t buffer[33];
+	uint8_t buffer[sizeof(setup->public_pake_data) + 1];
 	buffer[0] = SM_CODE_PAIRING_PAKE_REQ;
-	reverse_256(setup->sm_local_pake_payload, &buffer[1]);
 
+	reverse_bytes(setup->public_pake_data, &buffer[1], sizeof(setup->public_pake_data));
 	// if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
 	// {
 	// 	/* XPE: We are Sender */
@@ -2916,9 +2933,9 @@ static void sm_run_state_sc_send_pake_request(sm_connection_t *connection)
 
 static void sm_run_state_sc_send_pake_response(sm_connection_t *connection)
 {
-	uint8_t buffer[33];
+	uint8_t buffer[sizeof(setup->pake_response) + 1];
 	buffer[0] = SM_CODE_PAIRING_PAKE_RESP;
-	// reverse_256(setup->sm_local_pake_payload, &buffer[1]);
+	reverse_bytes(setup->pake_response, &buffer[1], sizeof(setup->pake_response));
 
 	// if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
 	// {
@@ -4635,7 +4652,7 @@ static uint8_t sm_pdu_validate_and_get_opcode(uint8_t packet_type, const uint8_t
             65, // 0x0c pairing public key
             17, // 0x0d pairing dhk check
             2,  // 0x0e keypress notification
-            33,  // 0x0f pairing pake request
+            49,  // 0x0f pairing pake request
             33,  // 0x10 pairing pake response
     };
 
@@ -4825,21 +4842,35 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 
 			case SM_SC_W4_PAKE_REQ:
 			{
-				uint8_t pake_req[32];
+				uint32_t passkey;
+				crypto_cpace_shared_keys shared_keys_computed_by_server;
 				/* XPE */
 				if (sm_pdu_code != SM_CODE_PAIRING_PAKE_REQ){
 					sm_pdu_received_in_wrong_state(sm_conn);
 					break;
 				}
-				reverse_256(packet + 1, pake_req);
 
-				/* TODO conduct PAKE */
+				reverse_bytes(packet + 1, setup->public_pake_data, sizeof(setup->public_pake_data));
+				passkey = big_endian_read_32(setup->sm_tk, 12);
 
-				for(int i = 0; i < 32; i++)
+				if(crypto_cpace_init() != 0)
+					btstack_assert(false);
+
+				/* Conduct PAKE */
+				/* [SERVER SIDE] Compute the shared keys using the public data,
+				 * and return a response to send back to the client.
+				 */
+
+				if (crypto_cpace_step2(
+						setup->pake_response, setup->public_pake_data, &shared_keys_computed_by_server, (const char *)&passkey,
+						sizeof(passkey), PAKE_CLIENT_ID, sizeof(PAKE_CLIENT_ID) - 1, PAKE_SERVER_ID,
+						sizeof(PAKE_SERVER_ID) - 1, 0,
+						0) != 0)
 				{
-					/* TODO */
-					setup->sm_pake_key[i] = pake_req[i] ^ ((uint8_t *)setup->sm_tk)[i % 12];
+					btstack_assert(false);
 				}
+
+				memcpy(setup->sm_pake_key, shared_keys_computed_by_server.client_sk, sizeof(setup->sm_pake_key));
 
 				/* Send PAKE response */
 				sm_conn->sm_engine_state = SM_SC_SEND_PAKE_RESPONSE;
@@ -4847,15 +4878,30 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 				break;
 
 			case SM_SC_W4_PAKE_RESP:
+			{
+				crypto_cpace_shared_keys shared_keys_computed_by_client;
 				/* XPE */
 				if (sm_pdu_code != SM_CODE_PAIRING_PAKE_RESP){
 					sm_pdu_received_in_wrong_state(sm_conn);
 					break;
 				}
-				/* TODO conduct PAKE */
+
+				reverse_bytes(packet + 1, setup->pake_response, sizeof(setup->pake_response));
+
+
+				/* Conduct PAKE */
+				/* [CLIENT SIDE] Compute the shared keys using the server response */
+				if (crypto_cpace_step3(&setup->ctx, &shared_keys_computed_by_client, setup->pake_response) != 0)
+				{
+					btstack_assert(false);
+				}
+
+
+				memcpy(setup->sm_pake_key, shared_keys_computed_by_client.client_sk, sizeof(setup->sm_pake_key));
 
 				/* Now send pairing random */
 				sm_conn->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+			}
 				break;
         case SM_SC_W4_PUBLIC_KEY_COMMAND:
             if (sm_pdu_code != SM_CODE_PAIRING_PUBLIC_KEY){
@@ -5328,6 +5374,7 @@ static void sm_channel_handler(uint8_t packet_type, hci_con_handle_t con_handle,
 
     uint8_t sm_pdu_code = sm_pdu_validate_and_get_opcode(packet_type, packet, size);
     if (sm_pdu_code == 0) return;
+
 
     sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
     if (!sm_conn) return;

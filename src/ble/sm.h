@@ -49,15 +49,21 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdio.h>
+#include <sodium.h>
 #include "btstack_util.h"
 #include "btstack_defines.h"
 #include "hci.h"
+#include "crypto_cpace.h"
+
+#define PAKE_CLIENT_ID "client"
+#define PAKE_SERVER_ID "server"
 
 typedef struct {
     btstack_linked_item_t  item;
     bd_addr_t      address;
     bd_addr_type_t address_type;
 } sm_lookup_entry_t;
+
 
 /* API_START */
 
