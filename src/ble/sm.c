@@ -345,6 +345,9 @@ typedef struct sm_setup_context {
 		 uint8_t   sm_peer_q[64];    // also stores random for EC key generation during init
 		 sm_key_t  sm_peer_nonce;    // might be combined with sm_peer_random
 		 sm_key_t  sm_local_nonce;   // might be combined with sm_local_random
+		 sm_key_t  sm_pake_check_nonce;
+		 sm_key_t  sm_local_pake_check;
+		 sm_key_t  sm_pake_check_response;
 		 uint8_t   sm_dhkey[32];
 		 unsigned char public_pake_data[crypto_cpace_PUBLICDATABYTES];
 		 unsigned char pake_response[crypto_cpace_RESPONSEBYTES];
@@ -434,8 +437,10 @@ typedef struct sm_setup_context {
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
 	static void sm_cmac_message_start(const sm_key_t key, uint16_t message_len, const uint8_t * message, void (*done_callback)(uint8_t * hash));
 	static void sm_ec_generate_new_key(void);
+	static void sm_handle_random_result_sc_next_send_pake_check_random(void * arg);
 	static void sm_handle_random_result_sc_next_w2_cmac_for_confirmation(void * arg);
 	static void sm_handle_random_result_sc_next_send_pairing_random(void * arg);
+	static void sm_run_state_sc_send_ready_command(sm_connection_t *connection);
 	static bool sm_passkey_entry(stk_generation_method_t method);
 #endif
 	static void sm_pairing_complete(sm_connection_t * sm_conn, uint8_t status, uint8_t reason);
@@ -987,6 +992,7 @@ int sm_address_resolution_lookup(uint8_t address_type, bd_addr_t address){
 
 static void sm_cmac_done_trampoline(void * arg){
     UNUSED(arg);
+
     sm_cmac_active = 0;
     (*sm_cmac_done_callback)(sm_cmac_hash);
     sm_trigger_run();
@@ -1752,6 +1758,25 @@ static void sm_sc_cmac_done(uint8_t * hash){
             }
             sm_sc_state_after_receiving_random(sm_conn);
             break;
+        case SM_SC_W4_CMAC_FOR_PAKE_CHECK:
+				/* XPE */
+            (void)memcpy(setup->sm_local_pake_check, hash, 16);
+            sm_conn->sm_engine_state = SM_SC_SEND_PAKE_CHECK_RESPONSE;
+            break;
+        case SM_SC_W4_CALCULATE_PAKE_CHALLENGE:
+            (void)memcpy(setup->sm_pake_check_nonce, hash, 16);
+            sm_conn->sm_engine_state = SM_SC_SEND_PAKE_CHECK_CHALLENGE;
+            break;
+        case SM_SC_W4_CMAC_FOR_PAKE_CHECK_RESPONSE_CHECK:
+            /* XPE check response */
+            if (0 != memcmp(hash, setup->sm_pake_check_response, 16)){
+                sm_pairing_error(sm_conn, SM_REASON_CONFIRM_VALUE_FAILED);
+                break;
+            }
+            /* XPE */
+            /* We (the Sender) now know that the other side has the PAKE key and thus knew s, can reveal nonce now */
+            sm_conn->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+            break;
         case SM_SC_W4_G4_FOR_CHECK_CONFIRMATION:
 			{
 				uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
@@ -1769,6 +1794,10 @@ static void sm_sc_cmac_done(uint8_t * hash){
 				// }
             
 				/* Then finish authentication phase and proceed to LTK check */
+
+				/* We are receiver, inform Sender that we are ready */
+				sm_run_state_sc_send_ready_command(sm_conn);
+				/* Then prepare with DHKey Check */
 				sm_sc_prepare_dhkey_check(sm_conn);
             break;
 			}
@@ -1976,6 +2005,13 @@ static void f6_engine(sm_connection_t * sm_conn, const sm_key_t w){
     sm_cmac_message_start(w, 65, sm_cmac_sc_buffer, &sm_sc_cmac_done);
 }
 
+
+static void f7_engine(sm_connection_t * sm_conn, const sm_key_t w)
+{
+    sm_cmac_connection = sm_conn;
+    sm_cmac_message_start(w, sizeof(setup->sm_pake_check_nonce), setup->sm_pake_check_nonce, &sm_sc_cmac_done);
+}
+
 // g2(U, V, X, Y) = AES-CMACX(U || V || Y) mod 2^32
 // - U is 256 bits
 // - V is 256 bits
@@ -2063,6 +2099,7 @@ static void pake_calculate_request(sm_connection_t * sm_conn)
 	// sm_trigger_run();
 
 }
+
 
 static void sm_sc_calculate_local_confirm(sm_connection_t * sm_conn){
     uint8_t z = 0;
@@ -2837,6 +2874,21 @@ static void sm_run_state_sc_send_confirmation(sm_connection_t *connection) {
     sm_timeout_reset(connection);
 }
 
+static void sm_run_state_sc_send_pake_check_response(sm_connection_t *connection)
+{
+	uint8_t buffer[17];
+	buffer[0] = SM_CODE_PAIRING_PAKE_CHECK_RESPONSE;
+
+	/* XPE */
+	reverse_128(setup->sm_local_pake_check, &buffer[1]);
+
+	/* Now waiting for pairing random */
+	connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+
+	sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
+	sm_timeout_reset(connection);
+}
+
 static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
     uint8_t buffer[17];
     buffer[0] = SM_CODE_PAIRING_RANDOM;
@@ -2851,7 +2903,8 @@ static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
 		if((!IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_RESP_INPUT) || (IS_RESPONDER(connection->sm_role) && setup->sm_stk_generation_method == PK_INIT_INPUT))
 		{
 			/* XPE: We are Sender */
-			enter_dhkey_check = true;
+			// enter_dhkey_check = true;
+			connection->sm_engine_state = SM_SC_W4_RECEIVER_READY_COMMAND;
 		}
 		else
 		{
@@ -2892,6 +2945,18 @@ static void sm_run_state_sc_send_pairing_random(sm_connection_t *connection) {
 		sm_sc_prepare_dhkey_check(connection);
 }
 
+static void sm_run_state_sc_send_pake_check_challenge(sm_connection_t *connection)
+{
+	uint8_t buffer[sizeof(setup->sm_pake_check_nonce) + 1];
+	buffer[0] = SM_CODE_PAIRING_PAKE_CHECK_CHALLENGE;
+
+	reverse_128(setup->sm_pake_check_nonce, &buffer[1]);
+	connection->sm_engine_state = SM_SC_W4_PAKE_CHECK_RESPONSE;
+
+	sm_send_connectionless(connection, (uint8_t*)buffer, sizeof(buffer));
+	sm_timeout_reset(connection);
+}
+
 static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection) {
     uint8_t buffer[17];
     buffer[0] = SM_CODE_PAIRING_DHKEY_CHECK;
@@ -2906,6 +2971,16 @@ static void sm_run_state_sc_send_dhkey_check_command(sm_connection_t *connection
     sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
     sm_timeout_reset(connection);
 }
+
+static void sm_run_state_sc_send_ready_command(sm_connection_t *connection) {
+    uint8_t buffer[1];
+    buffer[0] = SM_CODE_PAIRING_RECEIVER_READY;
+
+    sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
+    sm_timeout_reset(connection);
+
+}
+
 
 static void sm_run_state_sc_send_pake_request(sm_connection_t *connection)
 {
@@ -2949,8 +3024,8 @@ static void sm_run_state_sc_send_pake_response(sm_connection_t *connection)
 	// 	connection->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
 	// }
 
-	/* XPE: We should be Sender and thus now wait also will send the pairing random */
-	connection->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+	/* XPE: We now want to verify that the other side derived the same PAKE key as we did, so we send a nonce as challenge */
+	connection->sm_engine_state = SM_SC_W2_CALCULATE_PAKE_CHALLENGE;
 
 	sm_send_connectionless(connection, (uint8_t*) buffer, sizeof(buffer));
 	sm_timeout_reset(connection);
@@ -2991,7 +3066,8 @@ static void sm_run_state_sc_send_public_key_command(sm_connection_t *connection)
 				if(IS_RESPONDER(connection->sm_role))
 				{
 					/* XPE: We are Sender AND Responder */
-					sm_sc_start_calculating_local_confirm(connection);
+					// sm_sc_start_calculating_local_confirm(connection);
+					trigger_start_calculating_local_confirm = true;
 					/* Note: For the Initiator this is done later when pubkeys are recieved in the sm_pdu_handler */
 				}
 				else
@@ -3147,12 +3223,24 @@ static void sm_run(void){
                 connection->sm_engine_state = SM_SC_W4_CMAC_FOR_CONFIRMATION;
                 sm_sc_calculate_local_confirm(connection);
                 break;
+            case SM_SC_W2_CMAC_FOR_PAKE_CHECK:
+					 /* XPE */
+                connection->sm_engine_state = SM_SC_W4_CMAC_FOR_PAKE_CHECK;
+					 /* We are Receiver, Calculate response */
+					 f7_engine(connection, (const uint8_t *)setup->sm_pake_key); /* TODO use full length of key */
+                break;
             case SM_SC_W2_CMAC_FOR_CHECK_CONFIRMATION:
                 connection->sm_engine_state = SM_SC_W4_CMAC_FOR_CHECK_CONFIRMATION;
                 sm_sc_calculate_remote_confirm(connection);
                 break;
+            case SM_SC_W2_CMAC_FOR_PAKE_CHECK_RESPONSE_CHECK:
+					 /* XPE */
+                connection->sm_engine_state = SM_SC_W4_CMAC_FOR_PAKE_CHECK_RESPONSE_CHECK;
+                /* We are sender, calculate the response we expect to get */
+					 f7_engine(connection, (const uint8_t *)setup->sm_pake_key); /* TODO use full length of key */
+                break;
             case SM_SC_W2_G4_FOR_CHECK_CONFIRMATION:
-            	 /* XPE */
+					 /* XPE */
                 connection->sm_engine_state = SM_SC_W4_G4_FOR_CHECK_CONFIRMATION;
                 g4_calculate(connection);
                 break;
@@ -3179,6 +3267,10 @@ static void sm_run(void){
             case SM_SC_W2_CALCULATE_G2:
                 connection->sm_engine_state = SM_SC_W4_CALCULATE_G2;
                 g2_calculate(connection);
+                break;
+            case SM_SC_W2_CALCULATE_PAKE_CHALLENGE:
+                connection->sm_engine_state = SM_SC_W4_CALCULATE_PAKE_CHALLENGE;
+					 btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_pake_check_nonce, 16, &sm_handle_random_result_sc_next_send_pake_check_random, (void *)(uintptr_t) connection->sm_handle);
                 break;
             case SM_SC_W2_CALCULATE_PAKE_REQ:
             	 /* XPE */
@@ -3238,6 +3330,12 @@ static void sm_run(void){
                 break;
             case SM_SC_SEND_PAIRING_RANDOM:
                 sm_run_state_sc_send_pairing_random(connection);
+                break;
+            case SM_SC_SEND_PAKE_CHECK_CHALLENGE:
+                sm_run_state_sc_send_pake_check_challenge(connection);
+                break;
+            case SM_SC_SEND_PAKE_CHECK_RESPONSE:
+                sm_run_state_sc_send_pake_check_response(connection);
                 break;
             case SM_SC_SEND_PAKE_REQUEST:
                 sm_run_state_sc_send_pake_request(connection);
@@ -3921,6 +4019,15 @@ static void sm_handle_random_result_sc_next_send_pairing_random(void * arg){
     if (connection == NULL) return;
 
     connection->sm_engine_state = SM_SC_SEND_PAIRING_RANDOM;
+    sm_trigger_run();
+}
+
+static void sm_handle_random_result_sc_next_send_pake_check_random(void * arg){
+    hci_con_handle_t con_handle = (hci_con_handle_t) (uintptr_t) arg;
+    sm_connection_t * connection = sm_get_connection_for_handle(con_handle);
+    if (connection == NULL) return;
+
+    connection->sm_engine_state = SM_SC_SEND_PAKE_CHECK_CHALLENGE;
     sm_trigger_run();
 }
 
@@ -4654,6 +4761,9 @@ static uint8_t sm_pdu_validate_and_get_opcode(uint8_t packet_type, const uint8_t
             2,  // 0x0e keypress notification
             49,  // 0x0f pairing pake request
             33,  // 0x10 pairing pake response
+            17,  // 0x11 pairing pake key challenge random
+            17,  // 0x12 pairing pake key challenge response
+            1,  // 0x13 pairing receiver ready signal
     };
 
     if (packet_type != SM_DATA_PACKET) return 0;
@@ -4900,9 +5010,20 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 				memcpy(setup->sm_pake_key, shared_keys_computed_by_client.client_sk, sizeof(setup->sm_pake_key));
 
 				/* Now send pairing random */
-				sm_conn->sm_engine_state = SM_SC_W4_PAIRING_RANDOM;
+				sm_conn->sm_engine_state = SM_SC_W4_PAKE_CHECK_CHALLENGE;
 			}
 				break;
+
+        case SM_SC_W4_RECEIVER_READY_COMMAND:
+            if (sm_pdu_code != SM_CODE_PAIRING_RECEIVER_READY){
+                sm_pdu_received_in_wrong_state(sm_conn);
+                break;
+            }
+
+				/* XNC: When Receiver signaled ready we can continue with next Bluetooth stage */
+				sm_sc_prepare_dhkey_check(sm_conn);
+
+            break;
         case SM_SC_W4_PUBLIC_KEY_COMMAND:
             if (sm_pdu_code != SM_CODE_PAIRING_PUBLIC_KEY){
                 sm_pdu_received_in_wrong_state(sm_conn);
@@ -5036,6 +5157,31 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 					}
 				}
 				break;
+
+        case SM_SC_W4_PAKE_CHECK_RESPONSE:
+            if (sm_pdu_code != SM_CODE_PAIRING_PAKE_CHECK_RESPONSE){
+                sm_pdu_received_in_wrong_state(sm_conn);
+                break;
+            }
+            /* XPE */
+            /* Received pake key challenge response reply */
+            reverse_128(&packet[1], setup->sm_pake_check_response);
+
+				/* Calculate local check value */
+				sm_conn->sm_engine_state = SM_SC_W2_CMAC_FOR_PAKE_CHECK_RESPONSE_CHECK;
+            break;
+
+        case SM_SC_W4_PAKE_CHECK_CHALLENGE:
+            if (sm_pdu_code != SM_CODE_PAIRING_PAKE_CHECK_CHALLENGE){
+                sm_pdu_received_in_wrong_state(sm_conn);
+                break;
+            }
+            /* XPE */
+            /* Received pake challenge, calculate response */
+            reverse_128(&packet[1], setup->sm_pake_check_nonce);
+
+				sm_conn->sm_engine_state = SM_SC_W2_CMAC_FOR_PAKE_CHECK;
+            break;
 
         case SM_SC_W4_PAIRING_RANDOM:
             if (sm_pdu_code != SM_CODE_PAIRING_RANDOM){
