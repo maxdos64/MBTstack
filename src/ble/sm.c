@@ -225,6 +225,10 @@ static sm_key_t sm_persistent_dhk;
 static sm_key_t sm_persistent_irk;
 static derived_key_generation_t dkg_state;
 
+/* Stopwatch for XNC/PNC */
+struct timeval x_start_time;
+bool entered_blocking_timewindow = false;
+
 // derived from sm_persistent_er
 // ..
 
@@ -446,6 +450,8 @@ typedef struct sm_setup_context {
 	static void sm_pairing_complete(sm_connection_t * sm_conn, uint8_t status, uint8_t reason);
 	static void sm_run_state_sc_send_pake_request(sm_connection_t *connection);
 	static void sm_run_state_sc_send_pake_response(sm_connection_t *connection);
+
+	static void assure_x_timespan_passed(void);
 
 	static void log_info_hex16(const char * name, uint16_t value){
 		 log_info("%-6s 0x%04x", name, value);
@@ -1055,6 +1061,12 @@ void sm_cmac_signed_write_start(const sm_key_t k, uint8_t opcode, hci_con_handle
 static void sm_trigger_user_response_basic(sm_connection_t * sm_conn, uint8_t event_type){
     setup->sm_user_response = SM_USER_RESPONSE_PENDING;
     uint8_t event[12];
+
+	 if(event_type == SM_EVENT_PASSKEY_INPUT_NUMBER)
+	 {
+		 /* XPE: We entered the critical zone, this role execution must now block at least time T AFTER closing this input */
+		 entered_blocking_timewindow = true;
+	 }
     sm_setup_event_base(event, sizeof(event), event_type, sm_conn->sm_handle, sm_conn->sm_peer_addr_type, sm_conn->sm_peer_address);
     event[11] = setup->sm_use_secure_connections ? 1 : 0;
     sm_dispatch_event(HCI_EVENT_PACKET, 0, event, sizeof(event));
@@ -1067,6 +1079,7 @@ static void sm_trigger_user_response_passkey(sm_connection_t * sm_conn, uint8_t 
                         sm_conn->sm_peer_addr_type, sm_conn->sm_peer_address);
     event[11] = setup->sm_use_secure_connections ? 1 : 0;
     little_endian_store_32(event, 12, passkey);
+
     sm_dispatch_event(HCI_EVENT_PACKET, 0, event, sizeof(event));
 
 	if(sm_passkey_entry(setup->sm_stk_generation_method))
@@ -1100,6 +1113,9 @@ static void sm_trigger_user_response(sm_connection_t * sm_conn){
             sm_trigger_user_response_basic(sm_conn, SM_EVENT_PASSKEY_INPUT_NUMBER);
             break;
         case NUMERIC_COMPARISON:
+				/* XNC: Start local stopwatch */
+				if(!second_stage)
+					gettimeofday(&x_start_time, NULL);
             sm_trigger_user_response_passkey(sm_conn, SM_EVENT_NUMERIC_COMPARISON_REQUEST);
             break;
         case JUST_WORKS:
@@ -1576,9 +1592,14 @@ static void sm_store_bonding_information(sm_connection_t * sm_conn){
     }
 }
 
-static void sm_pairing_error(sm_connection_t * sm_conn, uint8_t reason){
-    sm_conn->sm_pairing_failed_reason = reason;
-    sm_conn->sm_engine_state = SM_GENERAL_SEND_PAIRING_FAILED;
+static void sm_pairing_error(sm_connection_t * sm_conn, uint8_t reason)
+{
+	/* XPE: make sure to block pairing for time T in case we already entered the blocking timewindow */
+	if(entered_blocking_timewindow)
+		assure_x_timespan_passed();
+
+	sm_conn->sm_pairing_failed_reason = reason;
+	sm_conn->sm_engine_state = SM_GENERAL_SEND_PAIRING_FAILED;
 }
 
 static int sm_le_device_db_index_lookup(bd_addr_type_t address_type, bd_addr_t address){
@@ -2136,8 +2157,25 @@ static void sm_sc_calculate_remote_confirm(sm_connection_t * sm_conn){
 }
 
 
+static void assure_x_timespan_passed()
+{
+	struct timeval tv;
+	uint32_t seconds_passed;
+
+	gettimeofday(&tv, NULL);
+	seconds_passed = (uint32_t)(tv.tv_sec  - x_start_time.tv_sec);
+
+	if(seconds_passed < X_PATCH_TIMEWINDOW_T_SECONDS)
+	{
+		printf("XPE: Blocking for %d seconds...\n", X_PATCH_TIMEWINDOW_T_SECONDS - seconds_passed);
+		sleep(X_PATCH_TIMEWINDOW_T_SECONDS - seconds_passed);
+	}
+}
+
 static void sm_sc_prepare_dhkey_check(sm_connection_t * sm_conn){
-    log_info("sm_sc_prepare_dhkey_check, DHKEY calculated %u", (setup->sm_state_vars & SM_STATE_VAR_DHKEY_CALCULATED) != 0 ? 1 : 0);
+	log_info("sm_sc_prepare_dhkey_check, DHKEY calculated %u", (setup->sm_state_vars & SM_STATE_VAR_DHKEY_CALCULATED) != 0 ? 1 : 0);
+	struct timeval tv;
+	uint32_t seconds_passed;
 
 	if(sm_passkey_entry(setup->sm_stk_generation_method))
 	{
@@ -2146,6 +2184,24 @@ static void sm_sc_prepare_dhkey_check(sm_connection_t * sm_conn){
 		for(int i = 0; i < 32; i++)
 		{
 			setup->sm_dhkey[i] ^= setup->sm_pake_key[i];
+		}
+
+		/* XPE: If we are receiver, make sure to block until stopwatch t_R reached expected value T */
+		if(entered_blocking_timewindow)
+		{
+			assure_x_timespan_passed();
+		}
+	}
+	else if(setup->sm_stk_generation_method == NUMERIC_COMPARISON)
+	{
+		/* XNC: Check if local XNC stopwatch (t_A/t_B) has not exceeded the limit T */
+		gettimeofday(&tv, NULL);
+		seconds_passed = (uint32_t)(tv.tv_sec  - x_start_time.tv_sec);
+		if(seconds_passed > X_PATCH_TIMEWINDOW_T_SECONDS)
+		{
+			printf("ERROR: Timeout, t_A/t_B exceeded %ds\n", X_PATCH_TIMEWINDOW_T_SECONDS);
+			sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
+			return;
 		}
 	}
 
@@ -4964,7 +5020,11 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 				passkey = big_endian_read_32(setup->sm_tk, 12);
 
 				if(crypto_cpace_init() != 0)
-					btstack_assert(false);
+				{
+					sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
+					sm_trigger_run();
+					return;
+				}
 
 				/* Conduct PAKE */
 				/* [SERVER SIDE] Compute the shared keys using the public data,
@@ -4977,7 +5037,9 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 						sizeof(PAKE_SERVER_ID) - 1, 0,
 						0) != 0)
 				{
-					btstack_assert(false);
+					sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
+					sm_trigger_run();
+					return;
 				}
 
 				memcpy(setup->sm_pake_key, shared_keys_computed_by_server.client_sk, sizeof(setup->sm_pake_key));
@@ -5003,7 +5065,9 @@ static void sm_pdu_handler(sm_connection_t *sm_conn, uint8_t sm_pdu_code, const 
 				/* [CLIENT SIDE] Compute the shared keys using the server response */
 				if (crypto_cpace_step3(&setup->ctx, &shared_keys_computed_by_client, setup->pake_response) != 0)
 				{
-					btstack_assert(false);
+					sm_pairing_error(sm_conn, SM_REASON_DHKEY_CHECK_FAILED);
+					sm_trigger_run();
+					return;
 				}
 
 
@@ -5526,6 +5590,10 @@ static void sm_channel_handler(uint8_t packet_type, hci_con_handle_t con_handle,
     if (!sm_conn) return;
 
     if (sm_pdu_code == SM_CODE_PAIRING_FAILED){
+
+			/* XPE: make sure to block pairing for time T in case we already entered the blocking timewindow */
+			if(entered_blocking_timewindow)
+				assure_x_timespan_passed();
         sm_reencryption_complete(sm_conn, ERROR_CODE_AUTHENTICATION_FAILURE);
         sm_pairing_complete(sm_conn, ERROR_CODE_AUTHENTICATION_FAILURE, packet[1]);
         sm_done_for_handle(con_handle);
@@ -5956,25 +6024,27 @@ void sm_numeric_comparison_confirm(hci_con_handle_t con_handle){
 }
 
 void sm_passkey_input(hci_con_handle_t con_handle, uint32_t passkey){
-    sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
-    if (!sm_conn) return;     // wrong connection
-		 sm_reset_tk();
-    big_endian_store_32(setup->sm_tk, 12, passkey);
+	sm_connection_t * sm_conn = sm_get_connection_for_handle(con_handle);
+	if (!sm_conn) return;     // wrong connection
+	sm_reset_tk();
+	big_endian_store_32(setup->sm_tk, 12, passkey);
 
-    setup->sm_user_response = SM_USER_RESPONSE_PASSKEY;
-    /* XPE */
-    // if (sm_conn->sm_engine_state == SM_PH1_W4_USER_RESPONSE){
-    //     btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_random, 16, &sm_handle_random_result_ph2_random, (void *)(uintptr_t) sm_conn->sm_handle);
-    // }
+	setup->sm_user_response = SM_USER_RESPONSE_PASSKEY;
+	/* XPE */
+	// if (sm_conn->sm_engine_state == SM_PH1_W4_USER_RESPONSE){
+	//     btstack_crypto_random_generate(&sm_crypto_random_request, setup->sm_local_random, 16, &sm_handle_random_result_ph2_random, (void *)(uintptr_t) sm_conn->sm_handle);
+	// }
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
-    (void)memcpy(setup->sm_ra, setup->sm_tk, 16);
-    (void)memcpy(setup->sm_rb, setup->sm_tk, 16);
-    /* XPE */
-    // if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
-    //     sm_sc_start_calculating_local_confirm(sm_conn);
-    // }
+	(void)memcpy(setup->sm_ra, setup->sm_tk, 16);
+	(void)memcpy(setup->sm_rb, setup->sm_tk, 16);
+	/* XPE */
+	// if (sm_conn->sm_engine_state == SM_SC_W4_USER_RESPONSE){
+	//     sm_sc_start_calculating_local_confirm(sm_conn);
+	// }
 #endif
 	/* XPE */
+	/* If we are Receiver, start local timer t_R */
+	gettimeofday(&x_start_time, NULL);
 	/* Start PAKE by calculating and sending PAKE request */
 	sm_conn->sm_engine_state = SM_SC_W2_CALCULATE_PAKE_REQ;
 

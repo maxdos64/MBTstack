@@ -49,6 +49,8 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/time.h>
 #include <sodium.h>
 #include "btstack_util.h"
 #include "btstack_defines.h"
