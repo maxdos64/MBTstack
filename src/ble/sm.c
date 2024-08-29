@@ -37,6 +37,8 @@
 
 #define BTSTACK_FILE__ "sm.c"
 
+
+
 #include <string.h>
 #include <inttypes.h>
 
@@ -1193,6 +1195,7 @@ static void sm_init_setup(sm_connection_t * sm_conn){
         setup->sm_have_oob_data = (*sm_get_oob_data)(sm_conn->sm_peer_addr_type, sm_conn->sm_peer_address, setup->sm_tk);
     }
 
+
     // if available and SC supported, also ask for SC OOB Data
 #ifdef ENABLE_LE_SECURE_CONNECTIONS
     memset(setup->sm_ra, 0, 16);
@@ -1751,6 +1754,7 @@ static void sm_sc_state_after_receiving_random(sm_connection_t * sm_conn){
 }
 
 static void sm_sc_cmac_done(uint8_t * hash){
+
     log_info("sm_sc_cmac_done: ");
     log_info_hexdump(hash, 16);
 
@@ -1800,6 +1804,7 @@ static void sm_sc_cmac_done(uint8_t * hash){
             break;
         case SM_SC_W4_G4_FOR_CHECK_CONFIRMATION:
 			{
+
 				uint32_t vab = big_endian_read_32(hash, 12) % 1000000;
 				uint32_t passkey = big_endian_read_32(setup->sm_tk, 12);
 
@@ -1928,6 +1933,7 @@ static void sm_sc_cmac_done(uint8_t * hash){
 }
 
 static void f4_engine(sm_connection_t * sm_conn, const sm_key256_t u, const sm_key256_t v, const sm_key_t x, uint8_t z){
+
     const uint16_t message_len = 65;
     sm_cmac_connection = sm_conn;
     (void)memcpy(sm_cmac_sc_buffer, u, 32);
@@ -2115,6 +2121,7 @@ static void pake_calculate_request(sm_connection_t * sm_conn)
 	// }
 
 	/* Send the request right away */
+
 	sm_run_state_sc_send_pake_request(sm_conn);
 	// sm_conn->sm_engine_state = SM_SC_SEND_PAKE;
 	// sm_trigger_run();
