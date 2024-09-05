@@ -47,6 +47,38 @@
 #include "btstack_bool.h"
 #include "hci.h"
 
+#ifdef MEASURE
+struct perf_event_attr perf_pe_instr;
+struct perf_event_attr perf_pe_cycles;
+// long long perf_count;
+int perf_fd;
+static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags)
+{
+	int ret;
+	ret = syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+	return ret;
+}
+
+#define TOTAL_EVENTS 2
+struct read_format {
+	uint64_t nr;
+	struct {
+		uint64_t value;
+		uint64_t id;
+	} values[TOTAL_EVENTS];
+};
+
+struct read_format counter_results;
+
+static void finish_perf_msmt()
+{
+	ioctl(perf_fd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+	read(perf_fd, &counter_results, sizeof(struct read_format));
+	printf("BTSTACK_CRYPTO: Used %lld instructions\n", counter_results.values[0].value);
+	printf("BTSTACK_CRYPTO: Used %lld cpu cycles\n", counter_results.values[1].value);
+}
+#endif
+
 //
 // AES128 Configuration
 //
@@ -174,14 +206,25 @@ static mbedtls_ecp_group   mbedtls_ec_group;
 #ifdef ENABLE_SOFTWARE_AES128
 // AES128 using public domain rijndael implementation
 void btstack_aes128_calc(const uint8_t * key, const uint8_t * plaintext, uint8_t * ciphertext){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     uint32_t rk[RKLENGTH(KEYBITS)];
     int nrounds = rijndaelSetupEncrypt(rk, &key[0], KEYBITS);
     rijndaelEncrypt(rk, nrounds, plaintext, ciphertext);
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
 }
 #endif
 
 static void btstack_crypto_done(btstack_crypto_t * btstack_crypto){
     btstack_linked_list_pop(&btstack_crypto_operations);
+
+#ifdef MEASURE
+		finish_perf_msmt();
+#endif
     (*btstack_crypto->context_callback.callback)(btstack_crypto->context_callback.context);
 }
 
@@ -386,6 +429,10 @@ static void btstack_crypto_cmac_handle_encryption_result(btstack_crypto_aes128_c
             log_info_key("CMAC", data);
             (void)memcpy(btstack_crypto_cmac->hash, data, 16);
 			btstack_linked_list_pop(&btstack_crypto_operations);
+#ifdef MEASURE
+
+		finish_perf_msmt();
+#endif
 			(*btstack_crypto_cmac->btstack_crypto.context_callback.callback)(btstack_crypto_cmac->btstack_crypto.context_callback.context);
             break;
         default:
@@ -407,7 +454,7 @@ static void btstack_crypto_cmac_start(btstack_crypto_aes128_cmac_t * btstack_cry
     if (btstack_crypto_cmac_block_count==0u){
         btstack_crypto_cmac_block_count = 1;
     }
-    log_info("btstack_crypto_cmac_start: len %u, block count %u", btstack_crypto_cmac->size, btstack_crypto_cmac_block_count);
+    log_info("btstack_crypto_cmac_start: len %u, block perf_count %u", btstack_crypto_cmac->size, btstack_crypto_cmac_block_count);
 
     // first, we need to compute l for k1, k2, and m_last
     btstack_crypto_cmac_state = CMAC_CALC_SUBKEYS;
@@ -941,6 +988,9 @@ static void btstack_crypto_run(void){
                         (void)memcpy(btstack_crypto_ec_p192->public_key,
                                      btstack_crypto_ecc_p256_public_key, 64);
                         btstack_linked_list_pop(&btstack_crypto_operations);
+#ifdef MEASURE
+		finish_perf_msmt();
+#endif
                         (*btstack_crypto_ec_p192->btstack_crypto.context_callback.callback)(btstack_crypto_ec_p192->btstack_crypto.context_callback.context);
                         break;
                     case ECC_P256_KEY_GENERATION_IDLE:
@@ -973,6 +1023,9 @@ static void btstack_crypto_run(void){
                 btstack_crypto_ecc_p256_calculate_dhkey_software(btstack_crypto_ec_p192);
                 // done
                 btstack_linked_list_pop(&btstack_crypto_operations);
+#ifdef MEASURE
+		finish_perf_msmt();
+#endif
                 (*btstack_crypto_ec_p192->btstack_crypto.context_callback.callback)(btstack_crypto_ec_p192->btstack_crypto.context_callback.context);
 #else
                 btstack_crypto_wait_for_hci_result = 1;
@@ -1004,6 +1057,9 @@ static void btstack_crypto_handle_random_data(const uint8_t * data, uint16_t len
             if (!btstack_crypto_random->size) {
                 // done
                 btstack_linked_list_pop(&btstack_crypto_operations);
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
                 (*btstack_crypto_random->btstack_crypto.context_callback.callback)(btstack_crypto_random->btstack_crypto.context_callback.context);
             }
             break;
@@ -1167,6 +1223,9 @@ static void btstack_crypto_event_handler(uint8_t packet_type, uint16_t cid, uint
                     }
                     // done
                     btstack_linked_list_pop(&btstack_crypto_operations);
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
                     (*btstack_crypto_ec_p192->btstack_crypto.context_callback.callback)(btstack_crypto_ec_p192->btstack_crypto.context_callback.context);                    
                     break;
                 default:
@@ -1184,6 +1243,11 @@ static void btstack_crypto_event_handler(uint8_t packet_type, uint16_t cid, uint
 }
 
 void btstack_crypto_random_generate(btstack_crypto_random_t * request, uint8_t * buffer, uint16_t size, void (* callback)(void * arg), void * callback_arg){
+
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 	request->btstack_crypto.context_callback.callback  = callback;
 	request->btstack_crypto.context_callback.context   = callback_arg;
 	request->btstack_crypto.operation         		   = BTSTACK_CRYPTO_RANDOM;
@@ -1194,6 +1258,10 @@ void btstack_crypto_random_generate(btstack_crypto_random_t * request, uint8_t *
 }
 
 void btstack_crypto_aes128_encrypt(btstack_crypto_aes128_t * request, const uint8_t * key, const uint8_t * plaintext, uint8_t * ciphertext, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 	request->btstack_crypto.context_callback.callback  = callback;
 	request->btstack_crypto.context_callback.context   = callback_arg;
 	request->btstack_crypto.operation         		   = BTSTACK_CRYPTO_AES128;
@@ -1205,6 +1273,10 @@ void btstack_crypto_aes128_encrypt(btstack_crypto_aes128_t * request, const uint
 }
 
 void btstack_crypto_aes128_cmac_generator(btstack_crypto_aes128_cmac_t * request, const uint8_t * key, uint16_t size, uint8_t (*get_byte_callback)(uint16_t pos), uint8_t * hash, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 	request->btstack_crypto.context_callback.callback  = callback;
 	request->btstack_crypto.context_callback.context   = callback_arg;
 	request->btstack_crypto.operation         		   = BTSTACK_CRYPTO_CMAC_GENERATOR;
@@ -1217,6 +1289,10 @@ void btstack_crypto_aes128_cmac_generator(btstack_crypto_aes128_cmac_t * request
 }
 
 void btstack_crypto_aes128_cmac_message(btstack_crypto_aes128_cmac_t * request, const uint8_t * key, uint16_t size, const uint8_t * message, uint8_t * hash, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 	request->btstack_crypto.context_callback.callback  = callback;
 	request->btstack_crypto.context_callback.context   = callback_arg;
 	request->btstack_crypto.operation         		   = BTSTACK_CRYPTO_CMAC_MESSAGE;
@@ -1229,6 +1305,10 @@ void btstack_crypto_aes128_cmac_message(btstack_crypto_aes128_cmac_t * request, 
 }
 
 void btstack_crypto_aes128_cmac_zero(btstack_crypto_aes128_cmac_t * request, uint16_t size, const uint8_t * message,  uint8_t * hash, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     request->btstack_crypto.context_callback.callback  = callback;
     request->btstack_crypto.context_callback.context   = callback_arg;
     request->btstack_crypto.operation                  = BTSTACK_CRYPTO_CMAC_MESSAGE;
@@ -1242,6 +1322,10 @@ void btstack_crypto_aes128_cmac_zero(btstack_crypto_aes128_cmac_t * request, uin
 
 #ifdef ENABLE_ECC_P256
 void btstack_crypto_ecc_p256_generate_key(btstack_crypto_ecc_p256_t * request, uint8_t * public_key, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     // reset key generation
     if (btstack_crypto_ecc_p256_key_generation_state == ECC_P256_KEY_GENERATION_DONE){
         btstack_crypto_ecc_p256_key_generation_state = ECC_P256_KEY_GENERATION_IDLE;
@@ -1255,6 +1339,10 @@ void btstack_crypto_ecc_p256_generate_key(btstack_crypto_ecc_p256_t * request, u
 }
 
 void btstack_crypto_ecc_p256_calculate_dhkey(btstack_crypto_ecc_p256_t * request, const uint8_t * public_key, uint8_t * dhkey, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     request->btstack_crypto.context_callback.callback  = callback;
     request->btstack_crypto.context_callback.context   = callback_arg;
     request->btstack_crypto.operation                  = BTSTACK_CRYPTO_ECC_P256_CALCULATE_DHKEY;
@@ -1265,6 +1353,10 @@ void btstack_crypto_ecc_p256_calculate_dhkey(btstack_crypto_ecc_p256_t * request
 }
 
 int btstack_crypto_ecc_p256_validate_public_key(const uint8_t * public_key){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 
     int err = 0;
 
@@ -1292,6 +1384,11 @@ int btstack_crypto_ecc_p256_validate_public_key(const uint8_t * public_key){
     mbedtls_ecp_point_free( & Q);
 #endif
 
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
+
+
     if (err != 0){
         log_info("public key invalid %x", err);
     }
@@ -1300,6 +1397,10 @@ int btstack_crypto_ecc_p256_validate_public_key(const uint8_t * public_key){
 #endif
 
 void btstack_crypto_ccm_init(btstack_crypto_ccm_t * request, const uint8_t * key, const uint8_t * nonce, uint16_t message_len, uint16_t additional_authenticated_data_len, uint8_t auth_len){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     request->key         = key;
     request->nonce       = nonce;
     request->message_len = message_len;
@@ -1308,9 +1409,16 @@ void btstack_crypto_ccm_init(btstack_crypto_ccm_t * request, const uint8_t * key
     request->auth_len    = auth_len;
     request->counter     = 1;
     request->state       = CCM_CALCULATE_X1;
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
 }
 
 void btstack_crypto_ccm_digest(btstack_crypto_ccm_t * request, uint8_t * additional_authenticated_data, uint16_t additional_authenticated_data_len, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     // not implemented yet
     request->btstack_crypto.context_callback.callback  = callback;
     request->btstack_crypto.context_callback.context   = callback_arg;
@@ -1322,10 +1430,21 @@ void btstack_crypto_ccm_digest(btstack_crypto_ccm_t * request, uint8_t * additio
 }
 
 void btstack_crypto_ccm_get_authentication_value(btstack_crypto_ccm_t * request, uint8_t * authentication_value){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     (void)memcpy(authentication_value, request->x_i, request->auth_len);
+#ifdef MEASURE
+	finish_perf_msmt();
+#endif
 }
 
 void btstack_crypto_ccm_encrypt_block(btstack_crypto_ccm_t * request, uint16_t len, const uint8_t * plaintext, uint8_t * ciphertext, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
 #ifdef DEBUG_CCM
     printf("\nbtstack_crypto_ccm_encrypt_block, len %u\n", len);
 #endif
@@ -1343,6 +1462,10 @@ void btstack_crypto_ccm_encrypt_block(btstack_crypto_ccm_t * request, uint16_t l
 }
 
 void btstack_crypto_ccm_decrypt_block(btstack_crypto_ccm_t * request, uint16_t len, const uint8_t * ciphertext, uint8_t * plaintext, void (* callback)(void * arg), void * callback_arg){
+#ifdef MEASURE
+	ioctl(perf_fd, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP);
+	ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+#endif
     request->btstack_crypto.context_callback.callback  = callback;
     request->btstack_crypto.context_callback.context   = callback_arg;
     request->btstack_crypto.operation                  = BTSTACK_CRYPTO_CCM_DECRYPT_BLOCK;
@@ -1369,8 +1492,42 @@ static void btstack_crypto_state_reset(void) {
 }
 
 void btstack_crypto_init(void){
+
     if (btstack_crypto_initialized) return;
     btstack_crypto_initialized = true;
+
+#ifdef MEASURE
+	 memset(&perf_pe_instr, 0, sizeof(struct perf_event_attr));
+	 perf_pe_instr.type = PERF_TYPE_HARDWARE;
+	 perf_pe_instr.size = sizeof(struct perf_event_attr);
+	 perf_pe_instr.config = PERF_COUNT_HW_INSTRUCTIONS;
+	 perf_pe_instr.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+	 perf_pe_instr.disabled = 1;
+	 perf_pe_instr.exclude_kernel = 1;
+	 // Don't count hypervisor events.
+	 perf_pe_instr.exclude_hv = 1;
+
+	 memset(&perf_pe_cycles, 0, sizeof(struct perf_event_attr));
+	 perf_pe_cycles.type = PERF_TYPE_HARDWARE;
+	 perf_pe_cycles.size = sizeof(struct perf_event_attr);
+	 perf_pe_cycles.config = PERF_COUNT_HW_CPU_CYCLES;
+	 perf_pe_cycles.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
+	 perf_pe_cycles.disabled = 1;
+	 perf_pe_cycles.exclude_kernel = 1;
+	 // Don't count hypervisor events.
+	 perf_pe_cycles.exclude_hv = 1;
+
+	 perf_fd = perf_event_open(&perf_pe_instr, 0, -1, -1, 0); /* Leader */
+	 if (perf_fd == -1) {
+		 fprintf(stderr, "Error opening leader %llx\n", perf_pe_instr.config);
+		 exit(EXIT_FAILURE);
+	 }
+	 int res = perf_event_open(&perf_pe_cycles, 0, -1, perf_fd, 0);
+	 if (res == -1) {
+		 fprintf(stderr, "Error opening follower %llx\n", perf_pe_cycles.config);
+		 exit(EXIT_FAILURE);
+	 }
+#endif
 
     // register with HCI
     hci_event_callback_registration.callback = &btstack_crypto_event_handler;

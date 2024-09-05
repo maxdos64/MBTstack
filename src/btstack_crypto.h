@@ -45,6 +45,17 @@
 #ifndef BTSTACK_CTRYPTO_H
 #define BTSTACK_CTRYPTO_H
 
+#ifdef MEASURE
+#define _GNU_SOURCE
+#include <inttypes.h>
+#include <sys/types.h>
+#include <linux/perf_event.h>
+#include <asm/unistd.h>
+#include <sys/ioctl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#endif
 #include "btstack_defines.h"
 #include "btstack_config.h"
 
@@ -53,6 +64,7 @@ extern "C" {
 #endif
 
 #define CMAC_TEMP_API
+
 
 typedef enum {
 	BTSTACK_CRYPTO_RANDOM,
